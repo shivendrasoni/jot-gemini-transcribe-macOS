@@ -34,6 +34,7 @@ struct TransformsView: View {
             if let editing {
                 TransformEditor(
                     transform: editing,
+                    others: transforms.filter { $0.id != editing.id },
                     onSave: { save($0) },
                     onDelete: { delete(editing) },
                     onClose: { self.editing = nil }
@@ -204,6 +205,9 @@ struct TransformsView: View {
 /// Name, summary, shortcut and prompt for one Transform.
 private struct TransformEditor: View {
     @State var transform: Transform
+    /// Every other saved Transform — needed to warn that a chord is about to be
+    /// taken off one of them.
+    let others: [Transform]
     let onSave: (Transform) -> Void
     let onDelete: () -> Void
     let onClose: () -> Void
@@ -232,14 +236,24 @@ private struct TransformEditor: View {
                             .font(JotUI.TypeScale.body(grad: grad))
                     }
                     field("Keyboard shortcut") {
-                        Picker("", selection: shortcutBinding) {
-                            Text("None").tag(TransformShortcut?.none)
-                            ForEach(TransformShortcut.slots, id: \.keyCode) { slot in
-                                Text("⌥ \(slot.label)").tag(TransformShortcut?.some(slot))
+                        VStack(alignment: .leading, spacing: JotUI.Spacing.xxs) {
+                            Picker("", selection: shortcutBinding) {
+                                Text("None").tag(TransformShortcut?.none)
+                                ForEach(TransformShortcut.slots, id: \.keyCode) { slot in
+                                    Text("⌥ \(slot.label)").tag(TransformShortcut?.some(slot))
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 120)
+                            // One chord resolves to exactly one Transform, so
+                            // saving this takes it off the other one. Say so
+                            // before the save, not after it silently happens.
+                            if let holder = currentHolder {
+                                Text("Saving this takes ⌥\(transform.shortcut?.label ?? "") off \(holder.name).")
+                                    .font(JotUI.TypeScale.labelSmall(grad: grad))
+                                    .foregroundStyle(JotUI.Colors.error)
                             }
                         }
-                        .labelsHidden()
-                        .frame(width: 120)
                     }
                     field("Prompt") {
                         TextEditor(text: $transform.prompt)
@@ -327,6 +341,13 @@ private struct TransformEditor: View {
     /// stored on the struct, so this bridges the two.
     private var shortcutBinding: Binding<TransformShortcut?> {
         Binding(get: { transform.shortcut }, set: { transform.shortcut = $0 })
+    }
+
+    /// The Transform that currently holds the chord being picked, if it is not
+    /// this one.
+    private var currentHolder: Transform? {
+        guard let shortcut = transform.shortcut else { return nil }
+        return others.first { $0.shortcut == shortcut }
     }
 
     private var header: some View {
