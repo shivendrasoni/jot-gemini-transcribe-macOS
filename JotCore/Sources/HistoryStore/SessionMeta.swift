@@ -61,6 +61,12 @@ public struct SessionMeta: Codable, Equatable, Sendable {
     /// Optional, so meta.json written by older builds still decodes.
     public var noiseFloorDBFS: Double?
     public var speechPeakDBFS: Double?
+    /// The Transform armed for this dictation, and whether it actually ran.
+    /// Recorded so a History row can answer "which prompt shaped this?" — and,
+    /// when the Transform was skipped, so the row does not imply it ran.
+    /// Optional, so meta.json written by older builds still decodes.
+    public var transformName: String?
+    public var transformApplied: Bool?
 
     public init(id: UUID, startedAt: Date, status: Status) {
         self.id = id

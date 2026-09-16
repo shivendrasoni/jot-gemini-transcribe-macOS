@@ -25,11 +25,41 @@ public struct TranscriptionResult: Equatable, Sendable {
     public var rawTranscript: String
     public var cleanedTranscript: String
     public var modelID: String
+    /// What the armed Transform did, if one was armed. The user asked for a
+    /// named thing by name, so a Transform that quietly does nothing is worse
+    /// than one that visibly fails — they would ship the untransformed text
+    /// believing it was transformed.
+    public var transformNote: TransformNote?
 
-    public init(rawTranscript: String, cleanedTranscript: String, modelID: String) {
+    public init(
+        rawTranscript: String,
+        cleanedTranscript: String,
+        modelID: String,
+        transformNote: TransformNote? = nil
+    ) {
         self.rawTranscript = rawTranscript
         self.cleanedTranscript = cleanedTranscript
         self.modelID = modelID
+        self.transformNote = transformNote
+    }
+}
+
+/// The outcome of an armed Transform, carried back to the HUD and History.
+public enum TransformNote: Equatable, Sendable {
+    case applied(String)
+    /// Name plus a short machine reason (`timeout`, `ai_selfreference`, …).
+    case skipped(String, reason: String)
+
+    public var transformName: String {
+        switch self {
+        case .applied(let name): return name
+        case .skipped(let name, _): return name
+        }
+    }
+
+    public var didApply: Bool {
+        if case .applied = self { return true }
+        return false
     }
 }
 
@@ -57,11 +87,23 @@ public struct DictationContext: Equatable, Sendable {
     public var targetAppBundleID: String?
     public var targetAppName: String?
     public var targetPID: pid_t?
+    /// The Transform armed for THIS dictation, if any.
+    ///
+    /// Lives on the context rather than in a store lookup at transcribe time
+    /// because it is a property of one recording, not of the app: arming ⌥1
+    /// mid-sentence must not retroactively change a dictation already in flight.
+    public var armedTransformID: UUID?
 
-    public init(targetAppBundleID: String? = nil, targetAppName: String? = nil, targetPID: pid_t? = nil) {
+    public init(
+        targetAppBundleID: String? = nil,
+        targetAppName: String? = nil,
+        targetPID: pid_t? = nil,
+        armedTransformID: UUID? = nil
+    ) {
         self.targetAppBundleID = targetAppBundleID
         self.targetAppName = targetAppName
         self.targetPID = targetPID
+        self.armedTransformID = armedTransformID
     }
 }
 

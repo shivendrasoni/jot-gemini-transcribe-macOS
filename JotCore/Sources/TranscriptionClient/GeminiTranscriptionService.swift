@@ -79,7 +79,11 @@ public struct GeminiTranscriptionService: TranscriptionServicing {
             throw TranscriptionError.emptyTranscript
         }
 
-        guard policy.cleanupPass else {
+        // An armed Transform REPLACES the tone pass rather than stacking on it:
+        // two text round trips, and two prompts arguing over tone. The decorator
+        // that runs the Transform sits outside this service, so this is the only
+        // place that can know not to spend the call.
+        guard policy.cleanupPass, context.armedTransformID == nil else {
             // Dictionary rules are a HARD guarantee — they apply on every path
             // (audit L9). The gate is deliberately NOT run here: with no second
             // model there is no independent reference, and validate(raw:X, cleaned:X)
