@@ -80,7 +80,8 @@ public enum TransformGate {
     /// Role & stance section says things like "You are an AI assistant". A
     /// substring match rejected that built-in on its own core use case.
     static func isRefusal(_ text: String) -> Bool {
-        let opening = text.prefix(60).lowercased()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let opening = trimmed.prefix(60).lowercased()
         return refusalOpeners.contains { opening.hasPrefix($0) }
     }
 
