@@ -50,6 +50,52 @@ final class TransformSeamTests: XCTestCase {
         XCTAssertEqual(DictionaryStore(defaults: defaults).vocabulary(), ["Kubernetes"])
     }
 
+    // MARK: The tone pass stands aside for a Transform
+
+    private func policy(cleanupPass: Bool) -> SettingsStore.FormattingPolicy {
+        SettingsStore.FormattingPolicy(nativeSmart: true, cleanupPass: cleanupPass)
+    }
+
+    private func context(armed: UUID?) -> DictationContext {
+        var context = DictationContext()
+        context.armedTransformID = armed
+        return context
+    }
+
+    /// The whole point of "a Transform replaces the cleanup pass": with one
+    /// armed, the tone pass must not also run and spend a second round trip on
+    /// output the Transform immediately overwrites.
+    func testArmedTransformSuppressesTheCleanupPass() {
+        XCTAssertFalse(
+            GeminiTranscriptionService.shouldRunCleanupPass(
+                policy: policy(cleanupPass: true), context: context(armed: UUID())
+            )
+        )
+    }
+
+    func testCleanupPassStillRunsWithNothingArmed() {
+        XCTAssertTrue(
+            GeminiTranscriptionService.shouldRunCleanupPass(
+                policy: policy(cleanupPass: true), context: context(armed: nil)
+            )
+        )
+    }
+
+    /// Arming a Transform must not turn the tone pass ON for someone who has it
+    /// switched off — the suppression only ever subtracts.
+    func testArmingDoesNotEnableACleanupPassThatWasOff() {
+        XCTAssertFalse(
+            GeminiTranscriptionService.shouldRunCleanupPass(
+                policy: policy(cleanupPass: false), context: context(armed: UUID())
+            )
+        )
+        XCTAssertFalse(
+            GeminiTranscriptionService.shouldRunCleanupPass(
+                policy: policy(cleanupPass: false), context: context(armed: nil)
+            )
+        )
+    }
+
     func testTranscriptionResultDefaultsToNoTransformNote() {
         let result = TranscriptionResult(rawTranscript: "a", cleanedTranscript: "a", modelID: "m")
         XCTAssertNil(result.transformNote)

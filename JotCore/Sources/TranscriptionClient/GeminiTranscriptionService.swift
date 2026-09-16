@@ -79,11 +79,7 @@ public struct GeminiTranscriptionService: TranscriptionServicing {
             throw TranscriptionError.emptyTranscript
         }
 
-        // An armed Transform REPLACES the tone pass rather than stacking on it:
-        // two text round trips, and two prompts arguing over tone. The decorator
-        // that runs the Transform sits outside this service, so this is the only
-        // place that can know not to spend the call.
-        guard policy.cleanupPass, context.armedTransformID == nil else {
+        guard Self.shouldRunCleanupPass(policy: policy, context: context) else {
             // Dictionary rules are a HARD guarantee — they apply on every path
             // (audit L9). The gate is deliberately NOT run here: with no second
             // model there is no independent reference, and validate(raw:X, cleaned:X)
@@ -103,6 +99,21 @@ public struct GeminiTranscriptionService: TranscriptionServicing {
             cleanedTranscript: cleaned,
             modelID: "\(config.transcribeModel)/\(policy.mode.rawValue)+\(config.cleanupModel)"
         )
+    }
+
+    /// Whether this dictation gets the opt-in tone pass.
+    ///
+    /// An armed Transform REPLACES the tone pass rather than stacking on it:
+    /// stacking costs two text round trips and puts two prompts in charge of
+    /// tone at once. The decorator that runs the Transform sits OUTSIDE this
+    /// service, so this is the only place that can know not to spend the call.
+    ///
+    /// Pulled out as a predicate purely so it can be tested: the branch it
+    /// guards is buried behind FLAC encoding and a network round trip.
+    static func shouldRunCleanupPass(
+        policy: SettingsStore.FormattingPolicy, context: DictationContext
+    ) -> Bool {
+        policy.cleanupPass && context.armedTransformID == nil
     }
 
     // MARK: - Stages
