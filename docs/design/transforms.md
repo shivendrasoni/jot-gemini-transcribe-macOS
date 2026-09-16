@@ -193,14 +193,22 @@ key-up means. It is a second, much smaller machine that happens to share events.
 Events into `HotkeyProcessor`: `.optionDown`, `.optionUp`, `.wheelRevealTimeout`,
 `.pickerMove(Int)`, `.pickerSlot(TransformShortcut)`.
 
-Intents out: `.armTransform(TransformShortcut?)`, `.showTransformWheel`,
+Intents out: `.armTransform(Int?)`, `.showTransformWheel(highlighted: Int)`,
 `.moveWheel(Int)`, `.dismissWheel`.
 
-The processor stays pure and store-free. It emits a *slot* — a key identity — and
-never a `Transform`; `DictationController` resolves slot to Transform through
-`TransformStore`. To clamp arrow movement the processor needs to know how many
-slots exist, so it gains `var wheelSlotCount: Int = 0`, pushed in by the
-controller exactly the way `doubleTapLockEnabled` already is.
+**The arming intent carries an INDEX, not a slot.** The first cut emitted a slot
+— a key identity — and that was wrong in two ways found in review. The wheel's
+highlight is a position in the user's Transform list, so resolving it against the
+global slot table armed whichever Transform owned the *n*th chord rather than the
+card being looked at. And a slot cannot name a Transform with no chord bound,
+which the wheel can legitimately highlight. Both ways of choosing now resolve to
+an index, which also gives the toggle one thing to compare.
+
+The processor stays pure and store-free: `DictationController` turns the index
+into a `Transform`. To map a chord to a position, and to clamp arrow movement,
+the processor holds `var wheelSlots: [TransformShortcut?]` — the user's
+Transforms in display order — pushed in by the controller exactly the way
+`doubleTapLockEnabled` already is.
 
 ### The gestures
 
@@ -232,22 +240,35 @@ straight through for any non-configured key. The tap begins *observing* it, and
 keeps passing it through — Option is load-bearing for ordinary typing and must
 never be swallowed.
 
-Digit, letter and arrow key-downs are routed to picker events and **consumed**
-(`return nil`) under three simultaneous conditions: a session is active, the
-dictation key is physically held, and Option is down. Consuming matters because
-`⌥1` otherwise types `¡` into whatever the user is dictating into. Outside that
-narrow window nothing changes, and every other key still feeds `.otherKeyDown`
-and still aborts an accidental chord exactly as today.
+Arrow key-downs, and character keys **that a Transform actually holds**, are
+routed to picker events and **consumed** (`return nil`) under three simultaneous
+conditions: a session is active, the dictation key is physically held, and
+Option is down. Consuming matters because `⌥1` otherwise types `¡` into whatever
+the user is dictating into.
+
+The bound-chords check is not an optimization. `⌥7` with nothing on 7 must keep
+typing what `⌥7` has always typed — swallowing a key for a gesture that does
+nothing breaks the keyboard — and routing it would let an unbound chord silently
+clear a Transform the user had already chosen. The controller pushes the bound
+set in alongside `wheelSlots`.
+
+Outside that narrow window nothing changes, and every other key still feeds
+`.otherKeyDown` and still aborts an accidental chord exactly as today.
 
 ---
 
 ## 4. Wheel and pill
 
-The wheel renders **inside the existing pill window**, above the pill, and the
-window grows to fit. A second `NSPanel` would mean a second thing to keep
-positioned across screen changes, Spaces and full-screen apps, and the pill's
-panel already has the level, click-through and `canJoinAllSpaces` behaviour
-solved.
+The wheel renders **inside the existing pill window**, above the pill. A second
+`NSPanel` would mean a second thing to keep positioned across screen changes,
+Spaces and full-screen apps, and the pill's panel already has the level,
+click-through and `canJoinAllSpaces` behaviour solved.
+
+The panel is simply made tall enough for the wheel up front, rather than resized
+when the wheel opens. `NSWindow` frame animation is exactly the jank this class
+already avoids for the pill, and the extra height is invisible: the panel is
+transparent, its content is bottom-anchored, and SwiftUI does not hit-test empty
+space, so the larger panel intercepts nothing.
 
 **It is drawn as a horizontal arc of cards, not a pie.** With up to 20
 Transforms, a true radial wheel is 20 unreadable slices; the arc keeps the
@@ -298,7 +319,17 @@ A Transform is an explicit gesture made once per dictation; switching it off
 behind the user's back would break a keystroke they are about to press again.
 
 `SessionMeta` records the Transform's name and whether it applied, so History
-shows which Transform ran on a row, and Retry re-runs the same one.
+shows which Transform ran on a row — and, when it was skipped, does not imply it
+ran.
+
+**Retry and crash recovery do NOT re-run the Transform.** `RetryQueue` and
+`RecoveryScanner` rebuild a `DictationContext` from the stored record, which
+carries no armed Transform, so a retried dictation comes back as plain
+transcription. This was discovered while building rather than designed, but it
+is the behaviour to keep: a retry can fire hours later, against a Transform the
+user has since edited or deleted, for a dictation they no longer remember
+arming. Re-running it silently would be the surprising choice. The row still
+names the Transform, so nothing is hidden.
 
 ---
 

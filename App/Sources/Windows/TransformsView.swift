@@ -208,6 +208,9 @@ private struct TransformEditor: View {
     let onDelete: () -> Void
     let onClose: () -> Void
 
+    @State private var trying = false
+    @State private var sampleResult: String?
+
     @Environment(\.colorScheme) private var scheme
     private var grad: CGFloat { scheme == .dark ? 25 : 0 }
 
@@ -247,8 +250,75 @@ private struct TransformEditor: View {
                     Text("Your dictation is added below this prompt, fenced, and labelled as speech — so a dictation that contains an instruction gets transformed, never obeyed.")
                         .font(JotUI.TypeScale.labelSmall(grad: grad))
                         .foregroundStyle(JotUI.Colors.onSurfaceVariant)
+
+                    tryItSection
                 }
                 .padding(JotUI.Spacing.m)
+            }
+        }
+    }
+
+    /// Answers "what will this actually do" on demand.
+    ///
+    /// A button rather than a live preview: a preview that re-renders as you
+    /// type would bill the user for an API call per keystroke, for an answer
+    /// they only want once.
+    private var tryItSection: some View {
+        VStack(alignment: .leading, spacing: JotUI.Spacing.xs) {
+            HStack(spacing: JotUI.Spacing.s) {
+                Button(trying ? "Running…" : "Try it") { runSample() }
+                    .font(JotUI.TypeScale.labelSmall(grad: grad))
+                    .disabled(trying || !transform.isUsable)
+                Text("on “\(Self.sample)”")
+                    .font(JotUI.TypeScale.labelSmall(grad: grad))
+                    .foregroundStyle(JotUI.Colors.onSurfaceVariant)
+                    .lineLimit(1)
+            }
+            if let sampleResult {
+                Text(sampleResult)
+                    .font(JotUI.TypeScale.body(grad: grad))
+                    .foregroundStyle(JotUI.Colors.onSurface)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(JotUI.Spacing.xs)
+                    .background(
+                        RoundedRectangle(cornerRadius: JotUI.Radius.small)
+                            .fill(JotUI.Colors.surfaceContainer)
+                    )
+            }
+        }
+    }
+
+    /// Deliberately messy: fillers, a self-correction, no punctuation — so the
+    /// sample shows what the prompt does with real dictation rather than with
+    /// text that is already clean.
+    private static let sample =
+        "so um i was thinking we should probably ship the thing on thursday actually no friday"
+
+    private func runSample() {
+        trying = true
+        sampleResult = nil
+        let prompt = TransformPromptV1.prompt(transform: transform.normalized, transcript: Self.sample)
+        Task { @MainActor in
+            defer { trying = false }
+            guard KeychainStore.loadAPIKey() != nil else {
+                sampleResult = "Add your Gemini API key in Settings → Advanced first."
+                return
+            }
+            let client = GeminiClient(apiKey: { KeychainStore.loadAPIKey() })
+            do {
+                let output = try await client.transform(
+                    prompt: prompt, deadline: TransformingTranscriptionService.transformDeadline
+                )
+                // Judged by the same gate the real path uses, so the preview
+                // cannot show something a dictation would have rejected.
+                let verdict = TransformGate.validate(output: output, transcript: Self.sample)
+                sampleResult = verdict.accepted
+                    ? verdict.stripped
+                    : "That came back unusable (\(verdict.reason ?? "rejected")) — a dictation would have been inserted as spoken."
+            } catch {
+                Log.ui.info("transform preview failed: \(String(describing: error), privacy: .public)")
+                sampleResult = "Couldn't reach the model just now."
             }
         }
     }

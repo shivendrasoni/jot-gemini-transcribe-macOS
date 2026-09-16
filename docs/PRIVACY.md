@@ -19,10 +19,16 @@ Everything else stays on your Mac. The code is open — verify all of this.
    in Settings → Dictation — off by default. It contains the transcript being
    formatted, the formatting rules, a coarse tone category derived from the
    frontmost app's *category* (e.g. "chat message"), and your dictionary terms.
-   With that setting off, your transcript text never leaves this Mac at all.
    Never window contents, never screenshots, never surrounding text.
-4. **Your API key**, in the request header to Google only. It is stored in the
+4. **A Transform prompt**, *only* on a dictation where you armed one (`⌥1`, or
+   the wheel). It contains the transcript being transformed, the prompt text you
+   wrote, and your dictionary terms — sent to the same single host, in one extra
+   request. Arming is a per-dictation act: no Transform, no second request.
+5. **Your API key**, in the request header to Google only. It is stored in the
    macOS Keychain, never in files or preferences.
+
+With tone matching off (the default) and no Transform armed, your transcript
+text never leaves this Mac at all.
 
 ## What never leaves
 
@@ -34,10 +40,15 @@ Everything else stays on your Mac. The code is open — verify all of this.
   store itself, and everything you have not dictated against, stays on this Mac
 - Which apps you use, when you dictate, or anything you type
 - Keystrokes: the event tap watches your dictation key, plus — only while a
-  dictation is active — Esc (cancel), Space (the hands-free gesture), and the
-  *fact that* another key was pressed (the accidental-chord guard; which key it
-  was is never examined beyond its keycode, never logged, never stored, never
-  transmitted). When you're not dictating, other keys pass through untouched.
+  dictation is active — Esc (cancel), Space (the hands-free gesture), Option and
+  the arrow and character keys pressed *with* Option held (the Transform
+  chords), and the *fact that* another key was pressed (the accidental-chord
+  guard). A keycode is compared against that short list and nothing else: it is
+  never resolved to a character, never logged, never stored, never transmitted.
+  Option itself is only observed, never consumed, so accented characters keep
+  working. When you're not dictating, every other key passes through untouched.
+- Your Transform prompts. They live in this Mac's preferences and are sent only
+  as part of a dictation you armed one for, as described above.
 - Screenshots: never taken. The app contains no screen-capture code.
 - Telemetry: there is none. No analytics SDK, no crash uploader, no phone-home.
 

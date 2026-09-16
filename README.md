@@ -28,12 +28,14 @@ to, no transcript to copy, no account to make.
 It is deliberately small: a menu bar icon, a pill at the bottom of your screen
 while you talk, and a History window that proves nothing was ever lost.
 
-## The three gestures
+## The gestures
 
 | Gesture | What happens |
 | --- | --- |
 | **Hold `fn`** | Records while held. Release and the text lands at your cursor. |
 | **`fn` + tap `Space`** | Hands-free: keeps recording after you let go. Tap `fn` to finish. |
+| **`fn` + `⌥1`** | Runs that Transform over the dictation before it lands. |
+| **`fn` + hold `⌥`** | Shows the wheel of Transforms. Arrows to choose, release `⌥` to apply. |
 | **`Esc`** | Cancels. Anything over 10 seconds is still kept in History. |
 
 The key is rebindable in Settings → General if `fn` is spoken for.
@@ -54,6 +56,14 @@ listening until you actually stop.
 Gemini API with *your* key. No middleman server, no account, no analytics, no
 screenshots, no keystroke logging — one network host, and you can read every
 line of the code that talks to it. See [PRIVACY.md](docs/PRIVACY.md).
+
+**Your prompts, one keystroke in.** A Transform is a prompt you save once and arm
+mid-sentence: hold `fn`, tap `⌥1`, and the dictation goes through *Polish* before
+a single character is typed. Nothing is ever rewritten in place, because nothing
+has been written yet. Jot ships with Polish, Prompt Engineer and Simplify; write
+your own in Settings → Transforms and bind it to any `⌥` chord. If a Transform
+fails, the pill says so and inserts what you dictated — it can cost you the
+polish, never the words.
 
 **Your jargon, spelled right.** Names and product terms go in the Dictionary and
 ride along with the audio, so the model hears "Kubernetes" instead of guessing
