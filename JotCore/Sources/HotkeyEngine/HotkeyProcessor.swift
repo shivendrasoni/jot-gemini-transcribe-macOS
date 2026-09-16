@@ -136,9 +136,6 @@ public struct HotkeyProcessor {
         if let fx = handlePicker(event) { return fx }
 
         var fx = Effects()
-        // A session ending takes the wheel with it — otherwise a wheel raised on
-        // the last dictation is still up, and still armed, on the next one.
-        defer { if phase == .idle { clearPicker() } }
         switch (phase, event) {
 
         // MARK: idle
@@ -241,6 +238,22 @@ public struct HotkeyProcessor {
         case (_, .optionDown), (_, .optionUp), (_, .wheelRevealTimeout),
              (_, .pickerMove), (_, .pickerSlot):
             break
+        }
+
+        // A session ending takes the wheel with it — otherwise a wheel raised on
+        // the last dictation is still up, and still armed, on the next one.
+        // Emitted as an intent rather than left for the HUD to infer: the wheel
+        // is on screen, and the layer that put it there is the one that must
+        // take it down.
+        //
+        // Deliberately not a `defer`. `return fx` copies the value before
+        // deferred blocks run, so mutating it there would be silently lost.
+        if phase == .idle {
+            if picker != .closed {
+                fx.intents.append(.dismissWheel)
+                fx.disarmWheelTimer = true
+            }
+            clearPicker()
         }
         return fx
     }

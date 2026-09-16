@@ -298,6 +298,45 @@ final class HotkeyPickerTests: XCTestCase {
         XCTAssertNil(processor.armedIndex, "the next dictation must not inherit this one's Transform")
     }
 
+    /// Ending a dictation with the wheel still up must take it OFF SCREEN, not
+    /// merely forget about it internally.
+    func testEndingADictationDismissesAnOpenWheel() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        XCTAssertEqual(processor.picker, .open(highlighted: 0))
+
+        let fx = processor.handle(.hotkeyUp, at: 2)
+
+        XCTAssertTrue(fx.intents.contains(.dismissWheel), "the wheel is on screen; something must take it down")
+        XCTAssertTrue(fx.intents.contains(.finalize), "and the dictation still finalizes")
+        XCTAssertTrue(fx.disarmWheelTimer)
+    }
+
+    func testCancellingWithTheWheelUpAlsoDismissesIt() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        // Esc closes the wheel first, so a SECOND Esc is the cancel — and by
+        // then the wheel is already down.
+        _ = processor.handle(.escDown, at: 1.3)
+        let fx = processor.handle(.escDown, at: 1.4)
+
+        XCTAssertEqual(fx.intents, [.cancel])
+        XCTAssertEqual(processor.picker, .closed)
+    }
+
+    /// An accidental chord kills a young session; the wheel must go with it.
+    func testAccidentalChordDismissesAnOpenWheel() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 0.1)
+        _ = processor.handle(.wheelRevealTimeout, at: 0.35)
+        let fx = processor.handle(.otherKeyDown, at: 0.5)
+
+        XCTAssertTrue(fx.intents.contains(.abortAccidental))
+        XCTAssertTrue(fx.intents.contains(.dismissWheel))
+    }
+
     func testArmingClearsOnCancel() {
         var processor = recording()
         _ = processor.handle(.optionDown, at: 1)
