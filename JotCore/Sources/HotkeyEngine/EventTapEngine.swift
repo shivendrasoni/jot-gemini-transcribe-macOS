@@ -56,7 +56,17 @@ public final class EventTapEngine {
     private var runLoop: CFRunLoop?
     private let timerQueue = DispatchQueue(label: "com.ammaar.jot.hotkey.timer")
     private var doubleTapTimer: DispatchSourceTimer?
+    /// Separate from the double-tap timer: both can legitimately be in flight,
+    /// and sharing one would make a Transform choice cancel a lock gesture.
+    private var wheelTimer: DispatchSourceTimer?
     private var healthTimer: DispatchSourceTimer?
+
+    /// Left and right Option. Observed, never consumed — Option is load-bearing
+    /// for ordinary typing (every accented character on a Mac) and swallowing it
+    /// would break the keyboard for anyone mid-dictation.
+    private static let optionKeyCodes: Set<Int64> = [58, 61]
+    /// Left, right, down, up.
+    private static let arrowKeyCodes: Set<Int64> = [123, 124, 125, 126]
 
     public init(key: HotkeyKey = .fn) {
         self.key = key
@@ -82,6 +92,14 @@ public final class EventTapEngine {
     public func setDoubleTapLockEnabled(_ enabled: Bool) {
         lock.lock()
         processor.doubleTapLockEnabled = enabled
+        lock.unlock()
+    }
+
+    /// How many Transforms the wheel shows. Zero means the Option gesture is
+    /// inert, which is correct when the user has deleted every Transform.
+    public func setWheelSlotCount(_ count: Int) {
+        lock.lock()
+        processor.wheelSlotCount = count
         lock.unlock()
     }
 
@@ -129,6 +147,7 @@ public final class EventTapEngine {
 
     public func stop() {
         doubleTapTimer?.cancel(); doubleTapTimer = nil
+        wheelTimer?.cancel(); wheelTimer = nil
         healthTimer?.cancel(); healthTimer = nil
         if let runLoop { CFRunLoopStop(runLoop) }
         if let tapPort { CGEvent.tapEnable(tap: tapPort, enable: false) }
@@ -194,6 +213,17 @@ public final class EventTapEngine {
             lock.lock()
             let configured = key
             guard keyCode == configured.keyCode else {
+                // Option is the Transform picker's modifier. We only OBSERVE it:
+                // the event always passes through, because Option is how every
+                // accented character on a Mac gets typed and swallowing it would
+                // break the keyboard for anyone mid-dictation.
+                if Self.optionKeyCodes.contains(keyCode), processor.isSessionActive {
+                    let isDown = event.flags.contains(.maskAlternate)
+                    let fx = processor.handle(isDown ? .optionDown : .optionUp, at: now)
+                    lock.unlock()
+                    apply(fx)
+                    return Unmanaged.passUnretained(event)
+                }
                 lock.unlock()
                 return Unmanaged.passUnretained(event)
             }
@@ -221,6 +251,31 @@ public final class EventTapEngine {
                 return Unmanaged.passUnretained(event)
             }
             lock.lock()
+            // Transform picker chords. Three conditions must hold together: a
+            // session is active, the dictation key is physically held, and
+            // Option is down. Outside that window nothing here changes, and
+            // every other key still feeds .otherKeyDown and still aborts an
+            // accidental chord exactly as before.
+            //
+            // These ARE consumed (return nil), unlike the Option modifier
+            // itself: ⌥1 otherwise types "¡" into the app being dictated into.
+            if processor.isSessionActive, processor.isKeyHeld, event.flags.contains(.maskAlternate) {
+                if Self.arrowKeyCodes.contains(keyCode) {
+                    // Left/up move back, right/down move forward — the wheel
+                    // reads horizontally but both axes should work.
+                    let delta = (keyCode == 123 || keyCode == 126) ? -1 : 1
+                    let fx = processor.handle(.pickerMove(delta), at: now)
+                    lock.unlock()
+                    apply(fx)
+                    return nil
+                }
+                if let slot = TransformShortcut.slot(forKeyCode: keyCode) {
+                    let fx = processor.handle(.pickerSlot(slot), at: now)
+                    lock.unlock()
+                    apply(fx)
+                    return nil
+                }
+            }
             // Space while the dictation key is physically held = hands-free lock.
             // Timing-free by construction — both keys are simply down together.
             if keyCode == 49, processor.isKeyHeld {
@@ -278,6 +333,30 @@ public final class EventTapEngine {
                 }
                 timer.resume()
                 self.doubleTapTimer = timer
+            }
+        }
+        // Same lifecycle discipline as the double-tap timer: all mutation
+        // confined to timerQueue, because apply() runs on the tap thread AND on
+        // the timer queue, and unsynchronized DispatchSourceTimer mutation is a
+        // crash (audit L17).
+        if fx.disarmWheelTimer || fx.armWheelTimer != nil {
+            let delay = fx.armWheelTimer
+            timerQueue.async { [weak self] in
+                guard let self else { return }
+                self.wheelTimer?.cancel()
+                self.wheelTimer = nil
+                guard let delay else { return }
+                let timer = DispatchSource.makeTimerSource(queue: self.timerQueue)
+                timer.schedule(deadline: .now() + delay)
+                timer.setEventHandler { [weak self] in
+                    guard let self else { return }
+                    self.lock.lock()
+                    let fx = self.processor.handle(.wheelRevealTimeout, at: ProcessInfo.processInfo.systemUptime)
+                    self.lock.unlock()
+                    self.apply(fx)
+                }
+                timer.resume()
+                self.wheelTimer = timer
             }
         }
         for intent in fx.intents {
