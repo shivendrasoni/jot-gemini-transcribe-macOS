@@ -57,8 +57,11 @@ struct PillView: View {
             // Live mode: the pill grows to carry the words as they arrive. Capped
             // and tail-anchored so a long dictation scrolls rather than pushing
             // the panel past its bounds.
-            pillSurface(width: model.partial.isEmpty ? (locked ? 268 : 200) : 520) {
+            pillSurface(width: listeningWidth(locked: locked)) {
                 HStack(spacing: JotUI.Spacing.s) {
+                    if let armed = model.armedTransform {
+                        armedChip(armed)
+                    }
                     if locked {
                         Image(systemName: "lock.fill")
                             .font(.system(size: 11))
@@ -180,6 +183,30 @@ struct PillView: View {
             // that happened to overflow first.
             .clipShape(Capsule())
             .gtGlassCapsule(tint: tint)
+    }
+
+    /// The armed Transform, named on the pill for the rest of the recording.
+    /// Naming it while they are still talking is the whole point: it is the
+    /// only chance to notice the wrong one is armed before the text lands.
+    private func armedChip(_ name: String) -> some View {
+        Text(name)
+            .font(JotUI.TypeScale.labelSmall())
+            .foregroundStyle(JotUI.Colors.onPrimaryContainer)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(JotUI.Colors.primaryContainer))
+            .transition(.scale.combined(with: .opacity))
+    }
+
+    /// The armed chip needs room; without it the waveform gets squeezed to
+    /// nothing on a long Transform name.
+    private func listeningWidth(locked: Bool) -> CGFloat {
+        if !model.partial.isEmpty { return 520 }
+        let base: CGFloat = locked ? 268 : 200
+        guard let armed = model.armedTransform else { return base }
+        // Roughly 7pt per character at 11pt, plus the capsule's padding.
+        return base + min(CGFloat(armed.count) * 7 + 24, 160)
     }
 
     private var stopButton: some View {

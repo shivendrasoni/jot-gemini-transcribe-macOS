@@ -25,8 +25,15 @@ final class PillHUDController {
     private let panel: NSPanel
 
     init() {
+        // Tall enough for the Transform wheel to sit above the pill.
+        //
+        // A fixed tall panel rather than one that resizes when the wheel opens:
+        // NSWindow frame animation is exactly the jank this class already
+        // avoids for the pill, and the extra height is invisible — the panel is
+        // transparent and its content is bottom-anchored. SwiftUI does not
+        // hit-test empty space, so the larger panel intercepts nothing.
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 96),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 220),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
@@ -107,11 +114,16 @@ private struct PillRootView: View {
     @ObservedObject var model: PillModel
 
     var body: some View {
-        VStack {
+        VStack(spacing: JotUI.Spacing.xs) {
             Spacer(minLength: 0)
+            if let wheel = model.wheel {
+                TransformWheelView(wheel: wheel)
+            }
             PillView(model: model)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .padding(.bottom, 8)
+        // The pill stays put; only the wheel animates in above it.
+        .animation(JotMotion.defaultSpatial, value: model.wheel == nil)
     }
 }
