@@ -44,8 +44,8 @@ final class HotkeyPickerTests: XCTestCase {
         _ = processor.handle(.optionDown, at: 1)
         let fx = processor.handle(.wheelRevealTimeout, at: 1.25)
 
-        XCTAssertEqual(processor.picker, .open(highlighted: 0))
-        XCTAssertEqual(fx.intents, [.showTransformWheel(highlighted: 0)])
+        XCTAssertEqual(processor.picker, .open(highlighted: nil), "nothing is chosen until the user chooses")
+        XCTAssertEqual(fx.intents, [.showTransformWheel(highlighted: nil)])
     }
 
     func testWheelDoesNotOpenWithNoSessionActive() {
@@ -124,7 +124,8 @@ final class HotkeyPickerTests: XCTestCase {
         var processor = recording()
         _ = processor.handle(.optionDown, at: 1)
         _ = processor.handle(.wheelRevealTimeout, at: 1.25)
-        _ = processor.handle(.pickerMove(1), at: 1.3)
+        _ = processor.handle(.pickerMove(1), at: 1.3)   // nothing -> first card
+        _ = processor.handle(.pickerMove(1), at: 1.35)  // -> second card
         let fx = processor.handle(.optionUp, at: 1.4)
 
         XCTAssertEqual(fx.intents, [.armTransform(1), .dismissWheel])
@@ -141,6 +142,36 @@ final class HotkeyPickerTests: XCTestCase {
         XCTAssertNil(processor.armedIndex)
     }
 
+    /// Someone holds ⌥ to type an accented character mid-dictation. The wheel
+    /// appears after 250ms because it cannot know what they meant. Letting go
+    /// must NOT arm anything — silently rewriting their words through a
+    /// Transform they never chose is the worst outcome in the feature.
+    func testReleasingOptionOverNothingArmsNothing() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        let fx = processor.handle(.optionUp, at: 1.6)
+
+        XCTAssertEqual(fx.intents, [.dismissWheel])
+        XCTAssertNil(processor.armedIndex)
+    }
+
+    /// …but if a Transform was already armed, the wheel opens on it, and
+    /// releasing re-affirms rather than clearing.
+    func testReleasingOptionOverTheAlreadyArmedTransformKeepsIt() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.pickerSlot(TransformShortcut.slots[1]), at: 1.1)
+        _ = processor.handle(.optionUp, at: 1.2)
+
+        _ = processor.handle(.optionDown, at: 2)
+        _ = processor.handle(.wheelRevealTimeout, at: 2.25)
+        let fx = processor.handle(.optionUp, at: 2.6)
+
+        XCTAssertEqual(fx.intents, [.armTransform(1), .dismissWheel])
+        XCTAssertEqual(processor.armedIndex, 1)
+    }
+
     /// THE wheel bug. The highlight is a position in the USER'S list, so
     /// releasing over the third card must arm the third Transform — not
     /// whichever Transform happens to own ⌥3.
@@ -155,7 +186,7 @@ final class HotkeyPickerTests: XCTestCase {
         _ = processor.handle(.hotkeyDown, at: 0)
         _ = processor.handle(.optionDown, at: 1)
         _ = processor.handle(.wheelRevealTimeout, at: 1.25)
-        _ = processor.handle(.pickerMove(2), at: 1.3)
+        for _ in 0..<3 { _ = processor.handle(.pickerMove(1), at: 1.3) }
         let fx = processor.handle(.optionUp, at: 1.4)
 
         XCTAssertEqual(fx.intents, [.armTransform(2), .dismissWheel])
@@ -170,6 +201,7 @@ final class HotkeyPickerTests: XCTestCase {
         _ = processor.handle(.optionDown, at: 1)
         _ = processor.handle(.wheelRevealTimeout, at: 1.25)
         _ = processor.handle(.pickerMove(1), at: 1.3)
+        _ = processor.handle(.pickerMove(1), at: 1.35)
         let fx = processor.handle(.optionUp, at: 1.4)
 
         XCTAssertEqual(fx.intents, [.armTransform(1), .dismissWheel])
@@ -198,7 +230,7 @@ final class HotkeyPickerTests: XCTestCase {
 
         _ = processor.handle(.optionDown, at: 2)
         _ = processor.handle(.wheelRevealTimeout, at: 2.25)
-        XCTAssertEqual(processor.picker, .open(highlighted: 2))
+        XCTAssertEqual(processor.picker, .open(highlighted: 2), "reopening shows where you already are")
     }
 
     // MARK: Movement
@@ -213,6 +245,9 @@ final class HotkeyPickerTests: XCTestCase {
 
         _ = processor.handle(.pickerMove(99), at: 1.4)
         XCTAssertEqual(processor.picker, .open(highlighted: 2))
+
+        _ = processor.handle(.pickerMove(-99), at: 1.5)
+        XCTAssertEqual(processor.picker, .open(highlighted: 0))
     }
 
     func testArrowMovementWithTheWheelClosedDoesNothing() {
@@ -304,7 +339,7 @@ final class HotkeyPickerTests: XCTestCase {
         var processor = recording()
         _ = processor.handle(.optionDown, at: 1)
         _ = processor.handle(.wheelRevealTimeout, at: 1.25)
-        XCTAssertEqual(processor.picker, .open(highlighted: 0))
+        XCTAssertEqual(processor.picker, .open(highlighted: nil))
 
         let fx = processor.handle(.hotkeyUp, at: 2)
 

@@ -103,6 +103,67 @@ final class TransformStoreTests: XCTestCase {
         XCTAssertEqual(after.map(\.id), store.transforms().map(\.id))
     }
 
+    /// The edit you just made wins the chord — even when the Transform holding
+    /// it sits LATER in the list.
+    ///
+    /// `save`'s uniqueness pass breaks ties by array position, which is the
+    /// wrong rule for an edit: giving the first card a chord held by the third
+    /// silently cleared the first and left the third holding it, so the user's
+    /// change did nothing and the editor's warning said the opposite.
+    func testUpsertTakesTheShortcutFromALaterTransform() {
+        let contested = try! XCTUnwrap(store.transforms()[2].shortcut) // ⌥3, on Simplify
+        var polish = store.transforms()[0]
+        polish.shortcut = contested
+        store.upsert(polish)
+
+        let after = store.transforms()
+        XCTAssertEqual(after[0].shortcut, contested, "the Transform being saved keeps its new chord")
+        XCTAssertNil(after[2].shortcut, "and it is released from the one that had it")
+        XCTAssertEqual(store.transform(forShortcut: contested)?.name, "Polish")
+    }
+
+    func testUpsertTakesTheShortcutFromAnEarlierTransform() {
+        let contested = try! XCTUnwrap(store.transforms()[0].shortcut) // ⌥1, on Polish
+        var simplify = store.transforms()[2]
+        simplify.shortcut = contested
+        store.upsert(simplify)
+
+        let after = store.transforms()
+        XCTAssertNil(after[0].shortcut)
+        XCTAssertEqual(after[2].shortcut, contested)
+    }
+
+    /// Dropping a Transform the user just typed, silently, is worse than
+    /// refusing it.
+    func testUpsertDoesNotSilentlyDiscardWhenAtTheCap() {
+        let full = (0..<TransformStore.maxTransforms).map { index in
+            Transform(name: "T\(index)", summary: "", prompt: "p", shortcut: nil, isBuiltIn: false, order: index)
+        }
+        store.save(full)
+        let firstID = store.transforms()[0].id
+
+        store.upsert(Transform(name: "Overflow", summary: "", prompt: "p", shortcut: nil, isBuiltIn: false, order: 99))
+
+        let after = store.transforms()
+        XCTAssertEqual(after.count, TransformStore.maxTransforms)
+        XCTAssertEqual(after[0].id, firstID, "no existing Transform is evicted to make room")
+        XCTAssertFalse(after.contains { $0.name == "Overflow" })
+    }
+
+    /// Editing at the cap must still work — the guard is only about appending.
+    func testUpsertStillEditsInPlaceAtTheCap() {
+        let full = (0..<TransformStore.maxTransforms).map { index in
+            Transform(name: "T\(index)", summary: "", prompt: "p", shortcut: nil, isBuiltIn: false, order: index)
+        }
+        store.save(full)
+        var edited = store.transforms()[5]
+        edited.name = "Edited"
+        store.upsert(edited)
+
+        XCTAssertEqual(store.transforms()[5].name, "Edited")
+        XCTAssertEqual(store.transforms().count, TransformStore.maxTransforms)
+    }
+
     func testUpsertAppendsAnUnknownTransform() {
         let fresh = Transform(name: "Mine", summary: "", prompt: "p", shortcut: nil, isBuiltIn: false, order: 99)
         store.upsert(fresh)

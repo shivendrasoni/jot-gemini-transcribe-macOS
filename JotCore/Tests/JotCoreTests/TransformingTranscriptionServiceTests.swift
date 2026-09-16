@@ -148,7 +148,7 @@ final class TransformingTranscriptionServiceTests: XCTestCase {
         let result = try await run(make(model: model), armed: polishID)
 
         XCTAssertEqual(result.cleanedTranscript, "clean text")
-        XCTAssertEqual(result.transformNote, .skipped("Polish", reason: "ai_selfreference"))
+        XCTAssertEqual(result.transformNote, .skipped("Polish", reason: "refusal"))
     }
 
     func testEmptyModelOutputReturnsTheInnerResult() async throws {

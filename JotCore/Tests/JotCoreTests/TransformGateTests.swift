@@ -19,8 +19,8 @@ import XCTest
 /// transcript, because drift is how an answering model gives itself away. A
 /// Transform's whole job IS drift, so this gate cannot use that measure. What
 /// is left is the small set of failures that are never legitimate: nothing came
-/// back, the model talked about itself, it ran away, or it read the
-/// instructions out loud.
+/// back, the model refused the job, it ran away, or it read the instructions
+/// out loud.
 final class TransformGateTests: XCTestCase {
     func testAcceptsAHeavyRewriteTheStrictGateWouldReject() {
         let transcript = "so um we should probably ship the thing on friday i think"
@@ -39,13 +39,37 @@ final class TransformGateTests: XCTestCase {
         XCTAssertEqual(verdict.reason, "empty_output")
     }
 
-    func testRejectsSelfReference() {
+    func testRejectsARefusal() {
         let verdict = TransformGate.validate(
             output: "As an AI language model, I cannot help with that.",
             transcript: "hello there friend"
         )
         XCTAssertFalse(verdict.accepted)
-        XCTAssertEqual(verdict.reason, "ai_selfreference")
+        XCTAssertEqual(verdict.reason, "refusal")
+    }
+
+    func testRejectsTheCommonRefusalOpeners() {
+        for opener in ["I'm sorry, I can't do that.", "I cannot comply.", "Sorry, that's not something I can do."] {
+            let verdict = TransformGate.validate(output: opener, transcript: "hello there friend")
+            XCTAssertFalse(verdict.accepted, opener)
+            XCTAssertEqual(verdict.reason, "refusal", opener)
+        }
+    }
+
+    /// The shipped Prompt Engineer Transform exists to write prompts FOR AI
+    /// models, so its Role & stance section says things like "You are an AI
+    /// assistant". Matching that phrase anywhere rejected the built-in on its
+    /// own core use case — the refusal check only looks at the opening.
+    func testAcceptsOutputThatTalksAboutAIWithoutRefusing() {
+        let output = """
+        **Role & stance**
+        You are an AI assistant specializing in skincare copywriting, adopting a warm, aspirational voice.
+
+        **Task**
+        Write product descriptions.
+        """
+        let verdict = TransformGate.validate(output: output, transcript: "help me write skincare product descriptions")
+        XCTAssertTrue(verdict.accepted, "Prompt Engineer must not be rejected for doing its job")
     }
 
     func testRejectsRunawayExpansion() {
@@ -75,6 +99,47 @@ final class TransformGateTests: XCTestCase {
             transcript: "fix it"
         )
         XCTAssertTrue(verdict.accepted)
+    }
+
+    /// A ratio alone is wrong for a TEMPLATED Transform. Prompt Engineer emits
+    /// five fixed section headings before any content, so its shortest and most
+    /// natural uses were the ones the ratio rejected while long rambling ones
+    /// passed. The absolute floor is the room that scaffolding needs.
+    func testShortDictationCanStillProduceAFullPromptTemplate() {
+        let transcript = "write a prompt for summarizing emails"
+        let output = """
+        **Title**
+        Email Summarization Prompt
+
+        **Role & stance**
+        You are a precise assistant that summarizes email threads.
+
+        **Task**
+        Summarize the email thread supplied by the user.
+
+        **Context**
+        The user will paste one thread. Nothing else is known.
+
+        **Inputs available**
+        - The raw email thread
+
+        **Output requirements**
+        - Three bullet points
+        - Neutral tone
+        """
+        XCTAssertGreaterThan(Double(output.count), Double(transcript.count) * TransformGate.maxExpansionRatio,
+                             "this is exactly the case the bare ratio rejected")
+        XCTAssertTrue(TransformGate.validate(output: output, transcript: transcript).accepted)
+    }
+
+    /// The floor is a floor, not a blank cheque: runaway output still fails.
+    func testTheAbsoluteFloorStillCatchesRunawayOutput() {
+        let verdict = TransformGate.validate(
+            output: String(repeating: "word ", count: 400),
+            transcript: "write a prompt for summarizing emails"
+        )
+        XCTAssertFalse(verdict.accepted)
+        XCTAssertEqual(verdict.reason, "runaway_length")
     }
 
     func testRejectsEchoOfTheInstruction() {

@@ -41,8 +41,9 @@ public enum HotkeyIntent: Equatable, Sendable {
     /// legitimately highlight. The hotkey layer stays store-free; the controller
     /// turns the index into a Transform.
     case armTransform(Int?)
-    /// Raise the Transform wheel above the pill, highlighting this index.
-    case showTransformWheel(highlighted: Int)
+    /// Raise the Transform wheel above the pill. `highlighted` is nil when
+    /// nothing is chosen yet — releasing over that arms nothing.
+    case showTransformWheel(highlighted: Int?)
     /// Move the wheel highlight to this index.
     case moveWheel(Int)
     /// Take the wheel down without arming anything.

@@ -353,9 +353,9 @@ final class DictationController {
             guard !transforms.isEmpty else { return true }
             hud.model.wheel = TransformWheelModel(
                 entries: transforms.map {
-                    TransformWheelModel.Entry(name: $0.name, shortcut: $0.shortcut?.label)
+                    TransformWheelModel.Entry(id: $0.id, name: $0.name, shortcut: $0.shortcut?.label)
                 },
-                highlighted: min(max(highlighted, 0), transforms.count - 1)
+                highlighted: highlighted.map { min(max($0, 0), transforms.count - 1) }
             )
             return true
 

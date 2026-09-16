@@ -39,10 +39,16 @@ struct TransformWheelView: View {
         VStack(spacing: JotUI.Spacing.xs) {
             HStack(spacing: JotUI.Spacing.xs) {
                 ForEach(Array(wheel.entries.enumerated()), id: \.element.id) { index, entry in
-                    card(entry, isHighlighted: index == wheel.highlighted, distance: abs(index - wheel.highlighted))
+                    card(
+                        entry,
+                        isHighlighted: index == wheel.highlighted,
+                        distance: wheel.highlighted.map { abs(index - $0) } ?? 0
+                    )
                 }
             }
-            Text("← → to choose · release ⌥ to apply · esc to close")
+            Text(wheel.highlighted == nil
+                 ? "← → or a number to choose · esc to close"
+                 : "release ⌥ to apply · esc to close")
                 .font(JotUI.TypeScale.labelSmall(grad: grad))
                 .foregroundStyle(JotUI.Colors.onSurfaceVariant)
         }

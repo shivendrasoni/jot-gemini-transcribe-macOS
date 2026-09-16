@@ -70,7 +70,13 @@ public struct HotkeyProcessor {
     /// `locked`×picker — and every exhaustive test case with it.
     public enum PickerState: Equatable, Sendable {
         case closed
-        case open(highlighted: Int)
+        /// `highlighted` is nil until the user actually picks something.
+        ///
+        /// Without that distinction, any Option hold longer than the reveal
+        /// delay arms a Transform on release — including the hold someone uses
+        /// to type an accented character mid-dictation, which would silently
+        /// rewrite their words. Releasing over nothing must mean nothing.
+        case open(highlighted: Int?)
     }
 
     public enum Phase: Equatable, Sendable {
@@ -280,9 +286,10 @@ public struct HotkeyProcessor {
 
         case .wheelRevealTimeout:
             guard optionIsDown, isSessionActive, wheelSlotCount > 0 else { return fx }
-            // Opens on the armed Transform, so reopening shows where you are
-            // rather than snapping back to the first card.
-            let highlighted = armedIndex ?? 0
+            // Opens on the armed Transform when there is one — reopening should
+            // show where you are. With nothing armed it opens on NOTHING, so a
+            // release that was never a choice cannot become one.
+            let highlighted = armedIndex
             picker = .open(highlighted: highlighted)
             fx.intents = [.showTransformWheel(highlighted: highlighted)]
             return fx
@@ -292,11 +299,11 @@ public struct HotkeyProcessor {
             fx.disarmWheelTimer = true
             guard case .open(let highlighted) = picker else { return fx }
             picker = .closed
-            // Releasing Option over the wheel is the commit gesture. The
-            // highlight is a position in the user's list — the same currency
-            // the digit path resolves to — so a Transform with no chord bound
-            // is still reachable here.
-            guard wheelSlots.indices.contains(highlighted) else {
+            // Releasing Option over the wheel is the commit gesture — but only
+            // if something is under it. Someone who held Option to type an
+            // accent and watched the wheel appear must be able to let go and
+            // have nothing happen.
+            guard let highlighted, wheelSlots.indices.contains(highlighted) else {
                 fx.intents = [.dismissWheel]
                 return fx
             }
@@ -305,8 +312,11 @@ public struct HotkeyProcessor {
             return fx
 
         case .pickerMove(let delta):
-            guard case .open(let highlighted) = picker else { return fx }
-            let moved = min(max(highlighted + delta, 0), wheelSlotCount - 1)
+            guard case .open(let highlighted) = picker, wheelSlotCount > 0 else { return fx }
+            // The first arrow press is what turns "nothing chosen" into a
+            // choice: forward lands on the first card, back on the last.
+            let from = highlighted ?? (delta < 0 ? wheelSlotCount : -1)
+            let moved = min(max(from + delta, 0), wheelSlotCount - 1)
             picker = .open(highlighted: moved)
             fx.intents = [.moveWheel(moved)]
             return fx

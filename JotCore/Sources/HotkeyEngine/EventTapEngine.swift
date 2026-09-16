@@ -68,6 +68,35 @@ public final class EventTapEngine {
     /// Left, right, down, up.
     private static let arrowKeyCodes: Set<Int64> = [123, 124, 125, 126]
 
+    /// Whether the picker's Option key is physically down.
+    ///
+    /// Tracked from flagsChanged rather than read off `.maskAlternate` on the
+    /// keystroke, because Right ⌥ is a selectable DICTATION key: holding it sets
+    /// `.maskAlternate` for the entire dictation, so a flag test would hijack
+    /// every digit and arrow that user types for the whole hold.
+    private var pickerModifierDown = false
+
+    /// True for an Option key that is not the user's dictation key. When Right ⌥
+    /// IS the dictation key, Left ⌥ still drives the picker — the gesture
+    /// survives, and the key doing the dictating is never also the modifier.
+    private func isPickerModifier(_ keyCode: Int64) -> Bool {
+        Self.optionKeyCodes.contains(keyCode) && keyCode != key.keyCode
+    }
+
+    /// Test seam. The rule is one line, but it is the line standing between a
+    /// Right ⌥ user and a keyboard that eats their digits.
+    func isPickerModifierForTesting(_ keyCode: Int64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return isPickerModifier(keyCode)
+    }
+
+    /// NX_DEVICELALTKEYMASK / NX_DEVICERALTKEYMASK — which side is actually
+    /// down, rather than "some Option is down".
+    static func optionIsDown(keyCode: Int64, flags: CGEventFlags) -> Bool {
+        let mask: UInt64 = keyCode == 58 ? 0x20 : 0x40
+        return flags.rawValue & mask != 0
+    }
+
     public init(key: HotkeyKey = .fn) {
         self.key = key
     }
@@ -85,6 +114,10 @@ public final class EventTapEngine {
         if key != newKey {
             key = newKey
             keyIsDown = false
+            // The picker modifier is defined relative to the dictation key, so
+            // changing the key can change which Option is the modifier. A stale
+            // "down" would then gate chords on a key nobody is holding.
+            pickerModifierDown = false
         }
         lock.unlock()
     }
@@ -115,6 +148,7 @@ public final class EventTapEngine {
     public func resetGrammar() {
         lock.lock()
         processor.reset()
+        pickerModifierDown = false
         lock.unlock()
     }
 
@@ -225,9 +259,16 @@ public final class EventTapEngine {
                 // the event always passes through, because Option is how every
                 // accented character on a Mac gets typed and swallowing it would
                 // break the keyboard for anyone mid-dictation.
-                if Self.optionKeyCodes.contains(keyCode), processor.isSessionActive {
-                    let isDown = event.flags.contains(.maskAlternate)
-                    let fx = processor.handle(isDown ? .optionDown : .optionUp, at: now)
+                if isPickerModifier(keyCode) {
+                    // Device-side bits, not `.maskAlternate`: the generic mask
+                    // stays set while the opposite-side twin is held, which is
+                    // the same trap audit L4 caught for the dictation key.
+                    pickerModifierDown = Self.optionIsDown(keyCode: keyCode, flags: event.flags)
+                    guard processor.isSessionActive else {
+                        lock.unlock()
+                        return Unmanaged.passUnretained(event)
+                    }
+                    let fx = processor.handle(pickerModifierDown ? .optionDown : .optionUp, at: now)
                     lock.unlock()
                     apply(fx)
                     return Unmanaged.passUnretained(event)
@@ -267,8 +308,12 @@ public final class EventTapEngine {
             //
             // These ARE consumed (return nil), unlike the Option modifier
             // itself: ⌥1 otherwise types "¡" into the app being dictated into.
-            if processor.isSessionActive, processor.isKeyHeld, event.flags.contains(.maskAlternate) {
-                if Self.arrowKeyCodes.contains(keyCode) {
+            if processor.isSessionActive, pickerModifierDown {
+                // Arrows are consumed ONLY while the wheel is actually up.
+                // ⌥← / ⌥→ is standard word navigation; swallowing it for the
+                // whole dictation would break editing in the app being
+                // dictated into, for a gesture with nothing on screen to aim at.
+                if Self.arrowKeyCodes.contains(keyCode), processor.picker != .closed {
                     // Left/up move back, right/down move forward — the wheel
                     // reads horizontally but both axes should work.
                     let delta = (keyCode == 123 || keyCode == 126) ? -1 : 1

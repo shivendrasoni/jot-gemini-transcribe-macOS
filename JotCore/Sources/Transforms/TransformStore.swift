@@ -73,11 +73,28 @@ public struct TransformStore: Sendable {
 
     /// Replaces a Transform in place, or appends it if it is new. In place
     /// matters: editing a card must not make it jump to the end of the grid.
+    ///
+    /// The Transform being saved WINS its chord. `save`'s uniqueness pass breaks
+    /// ties by array position, which is the wrong answer here — editing the
+    /// first card to take a chord from the third would silently discard the edit
+    /// and leave the third holding it. The user's most recent act is the one
+    /// that should stick, so the chord is released from the others explicitly
+    /// before the positional rule ever sees the list.
     public func upsert(_ transform: Transform) {
         var current = transforms()
+        if let shortcut = transform.shortcut {
+            for index in current.indices where current[index].id != transform.id {
+                if current[index].shortcut == shortcut { current[index].shortcut = nil }
+            }
+        }
         if let index = current.firstIndex(where: { $0.id == transform.id }) {
             current[index] = transform
         } else {
+            guard current.count < Self.maxTransforms else {
+                // Dropping it silently is how a user loses work they just typed.
+                Log.session.error("transform not added — already at the \(Self.maxTransforms) cap")
+                return
+            }
             current.append(transform)
         }
         save(current)

@@ -58,12 +58,17 @@ final class PillModel: ObservableObject {
 /// rendering choice, not a data structure.
 struct TransformWheelModel: Equatable {
     struct Entry: Equatable, Identifiable {
+        /// The Transform's own id. Name-plus-shortcut is not unique — two
+        /// unbound Transforms can share a name, and duplicate ForEach ids are
+        /// undefined behaviour in SwiftUI.
+        let id: UUID
         let name: String
         /// "1", "t", or nil when the Transform has no chord bound.
         let shortcut: String?
-        var id: String { "\(shortcut ?? "-")\(name)" }
     }
 
     var entries: [Entry]
-    var highlighted: Int
+    /// Nil until the user picks something — releasing ⌥ over nothing arms
+    /// nothing.
+    var highlighted: Int?
 }
