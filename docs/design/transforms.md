@@ -217,10 +217,27 @@ Transforms in display order — pushed in by the controller exactly the way
 | `⌥` + digit, while `fn` held | Arms that Transform. Wheel never appears. |
 | Same digit again | Disarms. Toggle, so there is no separate "clear" chord to learn. |
 | Another digit | Re-arms to that one. Last write wins. |
-| Hold `⌥` 250ms, `fn` still held | Wheel appears. |
-| ← / → while wheel up | Moves the highlight, clamped to `wheelSlotCount`. |
-| Release `⌥` while wheel up | Arms the highlighted Transform. |
+| Hold `⌥` 250ms, mid-dictation | Wheel appears, with **nothing** highlighted. |
+| ← / → while wheel up | Moves the highlight; the first press selects the first card. |
+| Release `⌥` over a highlighted card | Arms it. |
+| Release `⌥` over nothing | Arms nothing. |
 | `Esc` while wheel up | Closes the wheel. **Does not cancel the dictation.** |
+
+**The wheel opens with nothing chosen, and that is load-bearing.** Opening it
+pre-highlighted on the first card meant any Option hold longer than the reveal
+delay armed a Transform on release — including the hold someone uses to type an
+accented character mid-sentence, which would silently rewrite their words
+through a prompt they never picked. Releasing over nothing has to mean nothing.
+When a Transform is already armed the wheel opens on it, so reopening shows
+where you are and releasing re-affirms.
+
+**Option is never the dictation key and the picker modifier at once.** Right ⌥
+is a selectable dictation key. Holding it sets the generic `.maskAlternate` flag
+for the whole dictation, so gating the chords on that flag hijacked every digit
+and arrow those users typed for the entire hold. The tap reads the device-side
+bits (`NX_DEVICELALTKEYMASK` / `NX_DEVICERALTKEYMASK`) — the same fix audit L4
+applied to the dictation key — and treats only the *other* Option as the
+modifier. A Right ⌥ user picks Transforms with Left ⌥.
 
 **The 250ms reveal delay is what makes one mental model work for both users.** A
 fast `⌥1` should never flash a wheel for 80ms — that is visual noise during a
@@ -240,11 +257,14 @@ straight through for any non-configured key. The tap begins *observing* it, and
 keeps passing it through — Option is load-bearing for ordinary typing and must
 never be swallowed.
 
-Arrow key-downs, and character keys **that a Transform actually holds**, are
-routed to picker events and **consumed** (`return nil`) under three simultaneous
-conditions: a session is active, the dictation key is physically held, and
+Character keys **that a Transform actually holds** are routed to picker events
+and **consumed** (`return nil`) while a session is active and the picker's
 Option is down. Consuming matters because `⌥1` otherwise types `¡` into whatever
 the user is dictating into.
+
+Arrows are consumed only **while the wheel is up**. `⌥←` / `⌥→` is standard
+word navigation; swallowing it for the length of a dictation would break editing
+in the app being dictated into, for a gesture with nothing on screen to aim at.
 
 The bound-chords check is not an optimization. `⌥7` with nothing on 7 must keep
 typing what `⌥7` has always typed — swallowing a key for a gesture that does
@@ -294,10 +314,18 @@ happening.
 verbatim, then rejects on:
 
 - empty or whitespace-only output
-- refusal and self-reference patterns ("as an AI", "language model")
-- output longer than 8× the transcript (runaway generation — generous, because
-  Prompt Engineer legitimately expands a sentence into a structured block)
-- output identical to the prompt (echo failure)
+- a refusal — matched as a **prefix** ("As an AI", "I'm sorry", "I can't"),
+  never as a substring. Matching "as an AI" or "language model" anywhere
+  rejected the shipped Prompt Engineer Transform for doing exactly its job:
+  writing prompts whose Role & stance section says "You are an AI assistant".
+  A model declining the work always says so at the start.
+- output longer than `max(8 × transcript, 1200 characters)`. The ratio alone was
+  wrong for a templated Transform: Prompt Engineer emits roughly 120 characters
+  of fixed section headings before any content, so its *shortest* and most
+  natural uses were the ones rejected while long rambling ones passed. The
+  absolute floor is the room that scaffolding needs; the ratio still catches
+  repeat-until-token-limit on real input.
+- output that echoes the instruction preamble
 
 It deliberately does **not** run the strict gate's containment and trigram
 similarity checks. Those exist to catch a cleanup model that answered the

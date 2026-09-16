@@ -35,7 +35,7 @@ while you talk, and a History window that proves nothing was ever lost.
 | **Hold `fn`** | Records while held. Release and the text lands at your cursor. |
 | **`fn` + tap `Space`** | Hands-free: keeps recording after you let go. Tap `fn` to finish. |
 | **`fn` + `⌥1`** | Runs that Transform over the dictation before it lands. |
-| **`fn` + hold `⌥`** | Shows the wheel of Transforms. Arrows to choose, release `⌥` to apply. |
+| **`fn` + hold `⌥`** | Shows the wheel of Transforms. Arrows to choose, release `⌥` to apply, `Esc` to close. |
 | **`Esc`** | Cancels. Anything over 10 seconds is still kept in History. |
 
 The key is rebindable in Settings → General if `fn` is spoken for.
