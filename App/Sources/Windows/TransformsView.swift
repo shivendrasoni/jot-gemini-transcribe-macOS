@@ -39,6 +39,11 @@ struct TransformsView: View {
                     onDelete: { delete(editing) },
                     onClose: { self.editing = nil }
                 )
+                // The editor seeds @State from its parameter, which SwiftUI
+                // does NOT re-run when it reuses a view. Keying on the id
+                // guarantees a fresh editor per Transform rather than one
+                // showing the last one's text.
+                .id(editing.id)
             } else {
                 grid
                 footer
