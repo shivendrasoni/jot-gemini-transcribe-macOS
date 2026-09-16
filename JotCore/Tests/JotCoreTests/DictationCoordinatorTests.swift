@@ -91,10 +91,32 @@ final class DictationCoordinatorTests: XCTestCase {
         super.tearDown()
     }
 
+    /// `FakeTranscription` is a value type and cannot record what it was handed.
+    /// This one can — Transforms travel on the context, so the tests need to see
+    /// the context the coordinator actually passed down.
+    final class RecordingTranscription: TranscriptionServicing, @unchecked Sendable {
+        private let lock = NSLock()
+        private var contexts: [DictationContext] = []
+        var result = TranscriptionResult(rawTranscript: "raw", cleanedTranscript: "clean", modelID: "test")
+
+        var lastContext: DictationContext? {
+            lock.lock(); defer { lock.unlock() }; return contexts.last
+        }
+        var callCount: Int {
+            lock.lock(); defer { lock.unlock() }; return contexts.count
+        }
+
+        func transcribe(audioURL: URL, durationSeconds: Double, context: DictationContext) async throws -> TranscriptionResult {
+            lock.lock(); contexts.append(context); lock.unlock()
+            return result
+        }
+    }
+
     private func makeCoordinator(
-        transcription: FakeTranscription = FakeTranscription(),
+        transcription: TranscriptionServicing = FakeTranscription(),
         noiseHandling: Bool = false,
-        secureInput: Bool = false
+        secureInput: Bool = false,
+        live: LiveTranscribing? = nil
     ) -> DictationCoordinator {
         capture = FakeCapture()
         inserter = FakeInserter()
@@ -110,7 +132,8 @@ final class DictationCoordinatorTests: XCTestCase {
             // Never read the host's real secure-input state: it is system-wide,
             // and a stuck loginwindow or Terminal's Secure Keyboard Entry would
             // fail every begin-a-session test for reasons unrelated to the code.
-            secureInputActive: { secureInput }
+            secureInputActive: { secureInput },
+            makeLiveSession: { live }
         )
         lastCoordinator = coordinator
         return coordinator
@@ -668,5 +691,124 @@ extension DictationCoordinatorTests {
         c.handle(.finalize)
         await settle()
         XCTAssertNotEqual(c.state, .done(.silent))
+    }
+
+    // MARK: Transforms
+
+    func testArmingMidRecordingReachesTheTranscriptionContext() async {
+        let spy = RecordingTranscription()
+        let c = makeCoordinator(transcription: spy)
+        c.handle(.begin)
+        await pump()
+
+        let id = UUID()
+        c.armTransform(id, name: "Polish")
+        XCTAssertEqual(c.armedTransformName, "Polish")
+        XCTAssertEqual(c.armedTransformID, id)
+
+        c.handle(.finalize)
+        await settle()
+        XCTAssertEqual(spy.lastContext?.armedTransformID, id)
+    }
+
+    func testDisarmingClearsTheContextAndTheChip() async {
+        let spy = RecordingTranscription()
+        let c = makeCoordinator(transcription: spy)
+        c.handle(.begin)
+        await pump()
+
+        c.armTransform(UUID(), name: "Polish")
+        c.armTransform(nil, name: nil)
+        XCTAssertNil(c.armedTransformName)
+
+        c.handle(.finalize)
+        await settle()
+        XCTAssertNil(spy.lastContext?.armedTransformID)
+    }
+
+    /// Re-arming mid-sentence is a correction, not an error. Last write wins.
+    func testSecondArmReplacesTheFirst() async {
+        let spy = RecordingTranscription()
+        let c = makeCoordinator(transcription: spy)
+        c.handle(.begin)
+        await pump()
+
+        c.armTransform(UUID(), name: "Polish")
+        let second = UUID()
+        c.armTransform(second, name: "Simplify")
+
+        c.handle(.finalize)
+        await settle()
+        XCTAssertEqual(spy.lastContext?.armedTransformID, second)
+        XCTAssertEqual(c.armedTransformName, nil, "cleared with the session")
+    }
+
+    /// The chord is meaningless with nothing recording, and silently arming
+    /// "the next one" would surprise the user a whole dictation later.
+    func testArmingWithNoSessionIsIgnored() {
+        let c = makeCoordinator()
+        c.armTransform(UUID(), name: "Polish")
+        XCTAssertNil(c.armedTransformName)
+        XCTAssertNil(c.armedTransformID)
+    }
+
+    func testArmingIsClearedWhenTheSessionIsCancelled() async {
+        let c = makeCoordinator()
+        c.handle(.begin)
+        await pump()
+        c.armTransform(UUID(), name: "Polish")
+        c.handle(.cancel)
+        await settle()
+        XCTAssertNil(c.armedTransformName)
+    }
+
+    /// The live path returns before `transcription.transcribe()`, which is
+    /// where the Transform decorator lives. Taking it with a Transform armed
+    /// would silently skip the prompt — the worst failure, because the text
+    /// still looks plausible.
+    func testArmedTransformMakesLiveStandDown() async {
+        let live = LiveFallbackTests.ScriptedLive(
+            outcome: TranscriptionResult(rawTranscript: "live", cleanedTranscript: "live", modelID: "live")
+        )
+        let spy = RecordingTranscription()
+        let c = makeCoordinator(transcription: spy, live: live)
+        c.handle(.begin)
+        await pump()
+        c.armTransform(UUID(), name: "Polish")
+        c.handle(.finalize)
+        await settle()
+
+        XCTAssertEqual(spy.callCount, 1, "the upload path must run so the Transform gets its chance")
+    }
+
+    /// …and the stand-down must be NARROW. Unarmed, live still wins.
+    func testUnarmedLiveResultStillShortCircuitsTheUpload() async {
+        let live = LiveFallbackTests.ScriptedLive(
+            outcome: TranscriptionResult(rawTranscript: "live", cleanedTranscript: "live", modelID: "live")
+        )
+        let spy = RecordingTranscription()
+        let c = makeCoordinator(transcription: spy, live: live)
+        c.handle(.begin)
+        await pump()
+        c.handle(.finalize)
+        await settle()
+
+        XCTAssertEqual(spy.callCount, 0, "live mode must keep its fast path when nothing is armed")
+    }
+
+    func testTransformOutcomeIsRecordedOnTheSession() async {
+        let spy = RecordingTranscription()
+        spy.result = TranscriptionResult(
+            rawTranscript: "raw", cleanedTranscript: "clean", modelID: "test",
+            transformNote: .skipped("Polish", reason: "timeout")
+        )
+        let c = makeCoordinator(transcription: spy)
+        c.handle(.begin)
+        await pump()
+        c.armTransform(UUID(), name: "Polish")
+        c.handle(.finalize)
+        await settle()
+
+        XCTAssertEqual(c.lastTransformNote, .skipped("Polish", reason: "timeout"))
     }
 }

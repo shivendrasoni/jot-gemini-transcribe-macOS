@@ -27,6 +27,14 @@ public final class DictationCoordinator: ObservableObject {
     @Published public private(set) var micLevel: Float = 0
     @Published public private(set) var lastResult: String?
     @Published public private(set) var coachingHint: String?
+    /// The Transform armed for the live session, for the pill's chip. Cleared
+    /// with the session — see the `session` didSet, which is the one place that
+    /// runs on every one of the dozen ways a session can end.
+    @Published public private(set) var armedTransformName: String?
+    /// What the Transform did on the dictation that just finished. Read by the
+    /// HUD when it shows the outcome, so a skipped Transform is stated rather
+    /// than left for the user to notice in the text.
+    public private(set) var lastTransformNote: TransformNote?
 
     /// "Delete All History" should also forget the paste-last buffer — a user
     /// wiping their words expects them gone from everywhere we hold them.
@@ -108,6 +116,7 @@ public final class DictationCoordinator: ObservableObject {
             correctedTranscript = ""
             correctionSegments = []
             lastInterim = ""
+            armedTransformName = nil
             guard let live = liveSession else { return }
             liveSession = nil
             Task { await live.abort() }
@@ -280,6 +289,30 @@ public final class DictationCoordinator: ObservableObject {
             coachingHint = Self.coachTip
         }
     }
+
+    // MARK: - Transforms
+
+    /// Arms (or, with a nil id, disarms) a Transform for the dictation in
+    /// flight.
+    ///
+    /// It writes into the session's own context rather than into coordinator
+    /// state because a Transform belongs to ONE recording: a chord pressed
+    /// while a previous dictation is still transcribing must not reach back and
+    /// change it. No session, no arming — the gesture is meaningless outside one
+    /// and silently arming "the next one" would surprise the user a whole
+    /// dictation later.
+    public func armTransform(_ id: UUID?, name: String?) {
+        guard session != nil else {
+            Log.session.info("arm ignored — no session in flight")
+            return
+        }
+        session?.context.armedTransformID = id
+        armedTransformName = id == nil ? nil : name
+        Log.session.info("transform armed: \(name ?? "none", privacy: .public)")
+    }
+
+    /// The Transform armed for the dictation in flight, if any.
+    public var armedTransformID: UUID? { session?.context.armedTransformID }
 
     // MARK: - Session lifecycle
 
@@ -649,7 +682,19 @@ public final class DictationCoordinator: ObservableObject {
                 // cancels inFlightTask, so a live finish outside it would be
                 // invisible to cancellation and keep running after the user
                 // gave up.
-                if self.liveActiveForSession, let live = self.liveSession {
+                //
+                // An armed Transform makes live STAND DOWN. The live result
+                // returns from right here and never reaches
+                // `transcription.transcribe()`, which is where the Transform
+                // decorator lives — so taking this path with one armed would
+                // silently skip it, and the user would read plausible text
+                // never knowing which prompt did or did not shape it. Same
+                // precedent as `liveTranscriptionActive`: when two features
+                // contradict each other, one stands down visibly rather than
+                // both half-running. Costs one round trip, only here.
+                if self.liveActiveForSession,
+                   session.context.armedTransformID == nil,
+                   let live = self.liveSession {
                     let liveResult = await live.finish(
                         deadline: TimeoutPolicy.liveFinal,
                         framesWritten: result.framesWritten
@@ -701,7 +746,12 @@ public final class DictationCoordinator: ObservableObject {
             $0.cleanedTranscript = outcome.cleanedTranscript
             $0.modelID = outcome.modelID
             $0.status = .transcribing
+            // Recorded whether or not it ran, so a History row can never imply
+            // a Transform shaped text it did not touch.
+            $0.transformName = outcome.transformNote?.transformName
+            $0.transformApplied = outcome.transformNote.map(\.didApply)
         }
+        lastTransformNote = outcome.transformNote
         apply(.transcriptReady)
 
         let insertionOutcome = await insertion.insert(outcome.cleanedTranscript, context: session?.context ?? DictationContext())
@@ -806,6 +856,10 @@ public final class DictationCoordinator: ObservableObject {
         inFlightTask?.cancel() // stop the network work too (audit L8)
         inFlightTask = nil
         micLevel = 0
+        // Cleared HERE and not left to the session didSet: cancel's teardown is
+        // deferred (it drains the HAL tail), so the armed chip would sit on a
+        // pill that already says "cancelled".
+        armedTransformName = nil
         stopCapTimers()
         coachingHint = hint // feedback is immediate; the bookkeeping can wait
 
