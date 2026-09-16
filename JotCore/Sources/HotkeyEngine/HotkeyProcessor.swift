@@ -39,6 +39,16 @@ public struct HotkeyProcessor {
         case spaceLock
         /// The double-tap window expired (fed back by the timer the caller armed).
         case doubleTapTimeout
+        /// Option went down while the dictation key is held — the Transform
+        /// picker's modifier.
+        case optionDown
+        case optionUp
+        /// The wheel-reveal delay expired (fed back by the timer the caller armed).
+        case wheelRevealTimeout
+        /// Arrow key while the wheel is up.
+        case pickerMove(Int)
+        /// A slot key (digit or letter) pressed with Option held.
+        case pickerSlot(TransformShortcut)
     }
 
     public struct Effects: Equatable, Sendable {
@@ -46,6 +56,21 @@ public struct HotkeyProcessor {
         /// Arm the double-tap timer to fire after this many seconds (nil = leave as-is).
         public var armTimer: TimeInterval?
         public var disarmTimer = false
+        /// Arm the wheel-reveal timer. A separate timer from the double-tap one
+        /// because the two can legitimately be in flight at once.
+        public var armWheelTimer: TimeInterval?
+        public var disarmWheelTimer = false
+    }
+
+    /// Whether the Transform wheel is up, and where the highlight sits.
+    ///
+    /// Deliberately NOT a case inside `Phase`. The picker can be open while
+    /// pressed or while locked and changes nothing about what a key-up means,
+    /// so folding it in would square the state space — `pressed`×picker,
+    /// `locked`×picker — and every exhaustive test case with it.
+    public enum PickerState: Equatable, Sendable {
+        case closed
+        case open(highlighted: Int)
     }
 
     public enum Phase: Equatable, Sendable {
@@ -59,6 +84,14 @@ public struct HotkeyProcessor {
     }
 
     public private(set) var phase: Phase = .idle
+    public private(set) var picker: PickerState = .closed
+    /// The slot armed for this dictation, if any. Cleared with the session.
+    public private(set) var armedSlot: TransformShortcut?
+    /// How many Transforms the wheel has to show. Pushed in by the controller,
+    /// the same way `doubleTapLockEnabled` is, so this type stays store-free.
+    public var wheelSlotCount = 0
+    /// True while Option is physically down during a session.
+    private var optionIsDown = false
 
     /// Snap back to idle after the coordinator REFUSES a begin (secure field,
     /// busy) — otherwise a Space-lock on the phantom session strands the grammar
@@ -66,6 +99,13 @@ public struct HotkeyProcessor {
     public mutating func reset() {
         phase = .idle
         swallowNextUp = false
+        clearPicker()
+    }
+
+    private mutating func clearPicker() {
+        picker = .closed
+        armedSlot = nil
+        optionIsDown = false
     }
     /// When off, a short tap hints immediately and never arms the double-tap
     /// window — for users who find tap-tap colliding with quick holds.
@@ -87,7 +127,12 @@ public struct HotkeyProcessor {
     public init() {}
 
     public mutating func handle(_ event: Event, at now: TimeInterval) -> Effects {
+        if let fx = handlePicker(event) { return fx }
+
         var fx = Effects()
+        // A session ending takes the wheel with it — otherwise a wheel raised on
+        // the last dictation is still up, and still armed, on the next one.
+        defer { if phase == .idle { clearPicker() } }
         switch (phase, event) {
 
         // MARK: idle
@@ -185,7 +230,93 @@ public struct HotkeyProcessor {
 
         case (.locked, .otherKeyDown), (.locked, .doubleTapTimeout), (.locked, .spaceLock):
             break
+
+        // Picker events never reach here — handlePicker consumed them.
+        case (_, .optionDown), (_, .optionUp), (_, .wheelRevealTimeout),
+             (_, .pickerMove), (_, .pickerSlot):
+            break
         }
         return fx
+    }
+
+    // MARK: - The Transform picker
+
+    /// Handles the picker's own events, and steals `.escDown` while the wheel is
+    /// up. Returns nil for anything the phase machine should see.
+    ///
+    /// Running BEFORE the phase switch is what keeps the two machines
+    /// independent: no picker event can produce a phase transition, and in
+    /// particular `.pickerSlot` can never be mistaken for the `.otherKeyDown`
+    /// that aborts an accidental chord.
+    private mutating func handlePicker(_ event: Event) -> Effects? {
+        var fx = Effects()
+        switch event {
+        case .optionDown:
+            // Meaningless with nothing recording — there is no transcript for a
+            // Transform to run on, and the user is just typing an accent.
+            guard isSessionActive, wheelSlotCount > 0 else { return fx }
+            optionIsDown = true
+            fx.armWheelTimer = HotkeyTuning.wheelRevealDelay
+            return fx
+
+        case .wheelRevealTimeout:
+            guard optionIsDown, isSessionActive, wheelSlotCount > 0 else { return fx }
+            picker = .open(highlighted: highlightIndexForArmedSlot())
+            fx.intents = [.showTransformWheel]
+            return fx
+
+        case .optionUp:
+            optionIsDown = false
+            fx.disarmWheelTimer = true
+            guard case .open(let highlighted) = picker else { return fx }
+            picker = .closed
+            // Releasing Option over the wheel is the commit gesture.
+            let slot = TransformShortcut.slots.indices.contains(highlighted)
+                ? TransformShortcut.slots[highlighted] : nil
+            armedSlot = slot
+            fx.intents = [.armTransform(slot), .dismissWheel]
+            return fx
+
+        case .pickerMove(let delta):
+            guard case .open(let highlighted) = picker else { return fx }
+            let moved = min(max(highlighted + delta, 0), wheelSlotCount - 1)
+            picker = .open(highlighted: moved)
+            fx.intents = [.moveWheel(moved)]
+            return fx
+
+        case .pickerSlot(let slot):
+            guard isSessionActive else { return fx }
+            fx.disarmWheelTimer = true
+            let wasOpen = picker != .closed
+            picker = .closed
+            // Same slot twice disarms. A toggle means there is no separate
+            // "clear" chord to learn, and no way to be stuck armed.
+            let next: TransformShortcut? = (armedSlot == slot) ? nil : slot
+            armedSlot = next
+            fx.intents = wasOpen ? [.armTransform(next), .dismissWheel] : [.armTransform(next)]
+            return fx
+
+        case .escDown where picker != .closed:
+            // Esc is the universal back-out. Cancelling a whole dictation
+            // because the user closed a menu they did not want would kill trust
+            // in the wheel permanently.
+            picker = .closed
+            fx.disarmWheelTimer = true
+            fx.intents = [.dismissWheel]
+            return fx
+
+        default:
+            return nil
+        }
+    }
+
+    /// Opens the wheel on the armed Transform when there is one, so a reopen
+    /// shows where you already are rather than snapping back to the first card.
+    private func highlightIndexForArmedSlot() -> Int {
+        guard let armedSlot,
+              let index = TransformShortcut.slots.firstIndex(of: armedSlot),
+              index < wheelSlotCount
+        else { return 0 }
+        return index
     }
 }

@@ -246,6 +246,13 @@ public final class DictationCoordinator: ObservableObject {
         case .abortAccidental:
             handleAccidentalChord()
             return true
+        case .armTransform, .showTransformWheel, .moveWheel, .dismissWheel:
+            // Not the session brain's business. Arming needs a store lookup to
+            // turn a slot into a Transform, and the wheel is HUD state — both
+            // live in DictationController, which calls `armTransform(_:name:)`
+            // directly. Accepted so the grammar is never told its intent was
+            // refused.
+            return true
         }
     }
 

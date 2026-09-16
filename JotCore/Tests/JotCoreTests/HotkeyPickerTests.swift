@@ -1,0 +1,271 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import XCTest
+@testable import JotCore
+
+/// The Transform picker shares an event stream with the dictation grammar but
+/// must not be able to disturb it. The riskiest thing in this feature is that
+/// `⌥1` is, structurally, exactly the "another key went down" that already
+/// means *abort this dictation as an accidental chord* — so several of these
+/// tests exist purely to prove the two machines stay independent.
+final class HotkeyPickerTests: XCTestCase {
+    private func recording(slots: Int = 3) -> HotkeyProcessor {
+        var processor = HotkeyProcessor()
+        processor.wheelSlotCount = slots
+        _ = processor.handle(.hotkeyDown, at: 0)
+        return processor
+    }
+
+    // MARK: Reveal
+
+    func testOptionDownArmsTheTimerNotTheWheel() {
+        var processor = recording()
+        let fx = processor.handle(.optionDown, at: 1)
+
+        XCTAssertEqual(fx.armWheelTimer, HotkeyTuning.wheelRevealDelay)
+        XCTAssertEqual(processor.picker, .closed, "a fast ⌥1 must never flash the wheel")
+        XCTAssertTrue(fx.intents.isEmpty)
+    }
+
+    func testWheelAppearsOnlyAfterTheRevealDelay() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        let fx = processor.handle(.wheelRevealTimeout, at: 1.25)
+
+        XCTAssertEqual(processor.picker, .open(highlighted: 0))
+        XCTAssertEqual(fx.intents, [.showTransformWheel])
+    }
+
+    func testWheelDoesNotOpenWithNoSessionActive() {
+        var processor = HotkeyProcessor()
+        processor.wheelSlotCount = 3
+        let fx = processor.handle(.optionDown, at: 1)
+
+        XCTAssertNil(fx.armWheelTimer, "outside a dictation, Option is just Option")
+        XCTAssertEqual(processor.picker, .closed)
+    }
+
+    func testWheelDoesNotOpenWithNoTransformsConfigured() {
+        var processor = recording(slots: 0)
+        let fx = processor.handle(.optionDown, at: 1)
+        XCTAssertNil(fx.armWheelTimer, "an empty wheel is a lie about what is available")
+    }
+
+    /// A timeout that arrives after the user already let go must not raise a
+    /// wheel nobody asked for.
+    func testRevealTimeoutAfterOptionReleaseIsIgnored() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.optionUp, at: 1.1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+
+        XCTAssertEqual(processor.picker, .closed)
+    }
+
+    // MARK: Arming
+
+    func testDigitArmsImmediatelyWithoutTheWheel() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        let slot = TransformShortcut.slots[1]
+        let fx = processor.handle(.pickerSlot(slot), at: 1.1)
+
+        XCTAssertEqual(fx.intents, [.armTransform(slot)])
+        XCTAssertTrue(fx.disarmWheelTimer, "the wheel must not appear after the choice is made")
+        XCTAssertEqual(processor.armedSlot, slot)
+    }
+
+    func testDigitWithTheWheelUpAlsoClosesIt() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        let slot = TransformShortcut.slots[1]
+        let fx = processor.handle(.pickerSlot(slot), at: 1.3)
+
+        XCTAssertEqual(fx.intents, [.armTransform(slot), .dismissWheel])
+        XCTAssertEqual(processor.picker, .closed)
+    }
+
+    func testSameSlotTwiceDisarms() {
+        var processor = recording()
+        let slot = TransformShortcut.slots[0]
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.pickerSlot(slot), at: 1.1)
+        let fx = processor.handle(.pickerSlot(slot), at: 1.2)
+
+        XCTAssertEqual(fx.intents, [.armTransform(nil)])
+        XCTAssertNil(processor.armedSlot, "there must be no way to get stuck armed")
+    }
+
+    func testDifferentSlotReArms() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.pickerSlot(TransformShortcut.slots[0]), at: 1.1)
+        let second = TransformShortcut.slots[2]
+        let fx = processor.handle(.pickerSlot(second), at: 1.2)
+
+        XCTAssertEqual(fx.intents, [.armTransform(second)])
+        XCTAssertEqual(processor.armedSlot, second)
+    }
+
+    func testReleasingOptionArmsTheHighlightedSlot() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        _ = processor.handle(.pickerMove(1), at: 1.3)
+        let fx = processor.handle(.optionUp, at: 1.4)
+
+        XCTAssertEqual(fx.intents, [.armTransform(TransformShortcut.slots[1]), .dismissWheel])
+        XCTAssertEqual(processor.armedSlot, TransformShortcut.slots[1])
+    }
+
+    func testReleasingOptionWithoutTheWheelArmsNothing() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        let fx = processor.handle(.optionUp, at: 1.1)
+
+        XCTAssertTrue(fx.intents.isEmpty)
+        XCTAssertTrue(fx.disarmWheelTimer)
+        XCTAssertNil(processor.armedSlot)
+    }
+
+    /// Reopening should show where you are, not snap back to the first card.
+    func testWheelOpensOnTheAlreadyArmedSlot() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.pickerSlot(TransformShortcut.slots[2]), at: 1.1)
+        _ = processor.handle(.optionUp, at: 1.2)
+
+        _ = processor.handle(.optionDown, at: 2)
+        _ = processor.handle(.wheelRevealTimeout, at: 2.25)
+        XCTAssertEqual(processor.picker, .open(highlighted: 2))
+    }
+
+    // MARK: Movement
+
+    func testArrowMovementClampsAtBothEnds() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+
+        _ = processor.handle(.pickerMove(-5), at: 1.3)
+        XCTAssertEqual(processor.picker, .open(highlighted: 0))
+
+        _ = processor.handle(.pickerMove(99), at: 1.4)
+        XCTAssertEqual(processor.picker, .open(highlighted: 2))
+    }
+
+    func testArrowMovementWithTheWheelClosedDoesNothing() {
+        var processor = recording()
+        let fx = processor.handle(.pickerMove(1), at: 1)
+        XCTAssertTrue(fx.intents.isEmpty)
+        XCTAssertEqual(processor.picker, .closed)
+    }
+
+    // MARK: Esc
+
+    func testEscClosesTheWheelWithoutCancellingTheDictation() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        let fx = processor.handle(.escDown, at: 1.3)
+
+        XCTAssertEqual(fx.intents, [.dismissWheel])
+        XCTAssertEqual(processor.picker, .closed)
+        XCTAssertTrue(processor.isSessionActive, "the dictation must survive backing out of a menu")
+    }
+
+    func testEscStillCancelsWhenTheWheelIsClosed() {
+        var processor = recording()
+        let fx = processor.handle(.escDown, at: 1)
+        XCTAssertEqual(fx.intents, [.cancel])
+    }
+
+    /// Esc closes the wheel; a SECOND Esc then cancels, as it always did.
+    func testSecondEscCancelsAfterTheWheelIsClosed() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        _ = processor.handle(.escDown, at: 1.3)
+        let fx = processor.handle(.escDown, at: 1.4)
+        XCTAssertEqual(fx.intents, [.cancel])
+    }
+
+    // MARK: Independence from the dictation grammar
+
+    /// THE test. `⌥1` is structurally the same event that aborts an accidental
+    /// chord, and must never be mistaken for one.
+    func testPickerKeysNeverAbortAsAnAccidentalChord() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 0.1)
+        let fx = processor.handle(.pickerSlot(TransformShortcut.slots[0]), at: 0.2)
+
+        XCTAssertFalse(fx.intents.contains(.abortAccidental))
+        XCTAssertTrue(processor.isSessionActive)
+    }
+
+    func testOptionDoesNotDisturbTheHoldClassification() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 0.1)
+        _ = processor.handle(.pickerSlot(TransformShortcut.slots[0]), at: 0.2)
+        _ = processor.handle(.optionUp, at: 0.3)
+
+        let fx = processor.handle(.hotkeyUp, at: 0.5)
+        XCTAssertEqual(fx.intents, [.finalize], "a held key still finalizes on release")
+    }
+
+    func testSpaceLockStillWorksWithATransformArmed() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 0.1)
+        _ = processor.handle(.pickerSlot(TransformShortcut.slots[0]), at: 0.2)
+        _ = processor.handle(.optionUp, at: 0.3)
+
+        let fx = processor.handle(.spaceLock, at: 0.4)
+        XCTAssertEqual(fx.intents, [.lockIn])
+        XCTAssertEqual(processor.armedSlot, TransformShortcut.slots[0], "the arming survives the lock")
+    }
+
+    // MARK: Lifecycle
+
+    func testWheelAndArmingClearWhenTheSessionEnds() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        _ = processor.handle(.pickerSlot(TransformShortcut.slots[0]), at: 1.3)
+        _ = processor.handle(.hotkeyUp, at: 2)
+
+        XCTAssertEqual(processor.picker, .closed)
+        XCTAssertNil(processor.armedSlot, "the next dictation must not inherit this one's Transform")
+    }
+
+    func testArmingClearsOnCancel() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.pickerSlot(TransformShortcut.slots[0]), at: 1.1)
+        _ = processor.handle(.escDown, at: 1.2)
+
+        XCTAssertNil(processor.armedSlot)
+    }
+
+    func testResetClearsThePicker() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        processor.reset()
+
+        XCTAssertEqual(processor.picker, .closed)
+        XCTAssertNil(processor.armedSlot)
+    }
+}

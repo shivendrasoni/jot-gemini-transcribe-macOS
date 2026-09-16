@@ -30,6 +30,17 @@ public enum HotkeyIntent: Equatable, Sendable {
     /// Another key was typed within the interruption window — accidental chord,
     /// cancel silently (Wispr/VoiceInk pattern).
     case abortAccidental
+    /// Arm (or, with nil, disarm) the Transform bound to this slot.
+    ///
+    /// Carries a SLOT — a key identity — and never a Transform. The hotkey layer
+    /// stays pure and store-free; the controller resolves the slot.
+    case armTransform(TransformShortcut?)
+    /// Raise the Transform wheel above the pill.
+    case showTransformWheel
+    /// Move the wheel highlight to this index.
+    case moveWheel(Int)
+    /// Take the wheel down without arming anything.
+    case dismissWheel
 }
 
 /// Timing constants for the hotkey grammar (critic reconciliation #1).
@@ -42,4 +53,12 @@ public enum HotkeyTuning {
     public static let doubleTapWindow: TimeInterval = 0.50
     /// A non-hotkey keystroke within this window of session start aborts as accidental.
     public static let interruptionWindow: TimeInterval = 1.0
+    /// How long Option must be held, mid-dictation, before the Transform wheel
+    /// appears.
+    ///
+    /// This delay is what lets one gesture serve two users. A fast ⌥1 must never
+    /// flash a wheel for 80ms — that is visual noise in the middle of a
+    /// sentence. A slow hold is someone who does not remember the digits and
+    /// wants to look. Both arm identically; the wheel is discovery, not a step.
+    public static let wheelRevealDelay: TimeInterval = 0.25
 }
