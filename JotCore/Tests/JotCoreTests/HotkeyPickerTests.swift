@@ -23,7 +23,7 @@ import XCTest
 final class HotkeyPickerTests: XCTestCase {
     private func recording(slots: Int = 3) -> HotkeyProcessor {
         var processor = HotkeyProcessor()
-        processor.wheelSlotCount = slots
+        processor.wheelSlots = Array(TransformShortcut.slots.prefix(slots)).map { Optional($0) }
         _ = processor.handle(.hotkeyDown, at: 0)
         return processor
     }
@@ -45,12 +45,12 @@ final class HotkeyPickerTests: XCTestCase {
         let fx = processor.handle(.wheelRevealTimeout, at: 1.25)
 
         XCTAssertEqual(processor.picker, .open(highlighted: 0))
-        XCTAssertEqual(fx.intents, [.showTransformWheel])
+        XCTAssertEqual(fx.intents, [.showTransformWheel(highlighted: 0)])
     }
 
     func testWheelDoesNotOpenWithNoSessionActive() {
         var processor = HotkeyProcessor()
-        processor.wheelSlotCount = 3
+        processor.wheelSlots = Array(TransformShortcut.slots.prefix(3)).map { Optional($0) }
         let fx = processor.handle(.optionDown, at: 1)
 
         XCTAssertNil(fx.armWheelTimer, "outside a dictation, Option is just Option")
@@ -82,9 +82,9 @@ final class HotkeyPickerTests: XCTestCase {
         let slot = TransformShortcut.slots[1]
         let fx = processor.handle(.pickerSlot(slot), at: 1.1)
 
-        XCTAssertEqual(fx.intents, [.armTransform(slot)])
+        XCTAssertEqual(fx.intents, [.armTransform(1)])
         XCTAssertTrue(fx.disarmWheelTimer, "the wheel must not appear after the choice is made")
-        XCTAssertEqual(processor.armedSlot, slot)
+        XCTAssertEqual(processor.armedIndex, 1)
     }
 
     func testDigitWithTheWheelUpAlsoClosesIt() {
@@ -94,7 +94,7 @@ final class HotkeyPickerTests: XCTestCase {
         let slot = TransformShortcut.slots[1]
         let fx = processor.handle(.pickerSlot(slot), at: 1.3)
 
-        XCTAssertEqual(fx.intents, [.armTransform(slot), .dismissWheel])
+        XCTAssertEqual(fx.intents, [.armTransform(1), .dismissWheel])
         XCTAssertEqual(processor.picker, .closed)
     }
 
@@ -106,7 +106,7 @@ final class HotkeyPickerTests: XCTestCase {
         let fx = processor.handle(.pickerSlot(slot), at: 1.2)
 
         XCTAssertEqual(fx.intents, [.armTransform(nil)])
-        XCTAssertNil(processor.armedSlot, "there must be no way to get stuck armed")
+        XCTAssertNil(processor.armedIndex, "there must be no way to get stuck armed")
     }
 
     func testDifferentSlotReArms() {
@@ -116,8 +116,8 @@ final class HotkeyPickerTests: XCTestCase {
         let second = TransformShortcut.slots[2]
         let fx = processor.handle(.pickerSlot(second), at: 1.2)
 
-        XCTAssertEqual(fx.intents, [.armTransform(second)])
-        XCTAssertEqual(processor.armedSlot, second)
+        XCTAssertEqual(fx.intents, [.armTransform(2)])
+        XCTAssertEqual(processor.armedIndex, 2)
     }
 
     func testReleasingOptionArmsTheHighlightedSlot() {
@@ -127,8 +127,8 @@ final class HotkeyPickerTests: XCTestCase {
         _ = processor.handle(.pickerMove(1), at: 1.3)
         let fx = processor.handle(.optionUp, at: 1.4)
 
-        XCTAssertEqual(fx.intents, [.armTransform(TransformShortcut.slots[1]), .dismissWheel])
-        XCTAssertEqual(processor.armedSlot, TransformShortcut.slots[1])
+        XCTAssertEqual(fx.intents, [.armTransform(1), .dismissWheel])
+        XCTAssertEqual(processor.armedIndex, 1)
     }
 
     func testReleasingOptionWithoutTheWheelArmsNothing() {
@@ -138,7 +138,55 @@ final class HotkeyPickerTests: XCTestCase {
 
         XCTAssertTrue(fx.intents.isEmpty)
         XCTAssertTrue(fx.disarmWheelTimer)
-        XCTAssertNil(processor.armedSlot)
+        XCTAssertNil(processor.armedIndex)
+    }
+
+    /// THE wheel bug. The highlight is a position in the USER'S list, so
+    /// releasing over the third card must arm the third Transform — not
+    /// whichever Transform happens to own ⌥3.
+    func testReleasingOptionArmsByPositionNotByChord() {
+        var processor = HotkeyProcessor()
+        // Third Transform is bound to ⌥t; nothing is on ⌥3.
+        processor.wheelSlots = [
+            TransformShortcut.slots[0],
+            TransformShortcut.slots[1],
+            TransformShortcut.slot(forKeyCode: 17), // "t"
+        ]
+        _ = processor.handle(.hotkeyDown, at: 0)
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        _ = processor.handle(.pickerMove(2), at: 1.3)
+        let fx = processor.handle(.optionUp, at: 1.4)
+
+        XCTAssertEqual(fx.intents, [.armTransform(2), .dismissWheel])
+    }
+
+    /// A Transform with no chord bound is still reachable from the wheel —
+    /// otherwise the wheel shows a card that cannot be chosen.
+    func testWheelCanArmATransformWithNoShortcut() {
+        var processor = HotkeyProcessor()
+        processor.wheelSlots = [TransformShortcut.slots[0], nil]
+        _ = processor.handle(.hotkeyDown, at: 0)
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.wheelRevealTimeout, at: 1.25)
+        _ = processor.handle(.pickerMove(1), at: 1.3)
+        let fx = processor.handle(.optionUp, at: 1.4)
+
+        XCTAssertEqual(fx.intents, [.armTransform(1), .dismissWheel])
+    }
+
+    /// An unbound chord is not ours. It must not clear a Transform the user
+    /// already chose, and the tap must let it through to be typed.
+    func testUnboundSlotDoesNotDisarm() {
+        var processor = recording()
+        _ = processor.handle(.optionDown, at: 1)
+        _ = processor.handle(.pickerSlot(TransformShortcut.slots[0]), at: 1.1)
+
+        let unbound = TransformShortcut.slots[8] // ⌥9, nothing on it
+        let fx = processor.handle(.pickerSlot(unbound), at: 1.2)
+
+        XCTAssertTrue(fx.intents.isEmpty)
+        XCTAssertEqual(processor.armedIndex, 0, "the earlier choice survives")
     }
 
     /// Reopening should show where you are, not snap back to the first card.
@@ -234,7 +282,7 @@ final class HotkeyPickerTests: XCTestCase {
 
         let fx = processor.handle(.spaceLock, at: 0.4)
         XCTAssertEqual(fx.intents, [.lockIn])
-        XCTAssertEqual(processor.armedSlot, TransformShortcut.slots[0], "the arming survives the lock")
+        XCTAssertEqual(processor.armedIndex, 0, "the arming survives the lock")
     }
 
     // MARK: Lifecycle
@@ -247,7 +295,7 @@ final class HotkeyPickerTests: XCTestCase {
         _ = processor.handle(.hotkeyUp, at: 2)
 
         XCTAssertEqual(processor.picker, .closed)
-        XCTAssertNil(processor.armedSlot, "the next dictation must not inherit this one's Transform")
+        XCTAssertNil(processor.armedIndex, "the next dictation must not inherit this one's Transform")
     }
 
     func testArmingClearsOnCancel() {
@@ -256,7 +304,7 @@ final class HotkeyPickerTests: XCTestCase {
         _ = processor.handle(.pickerSlot(TransformShortcut.slots[0]), at: 1.1)
         _ = processor.handle(.escDown, at: 1.2)
 
-        XCTAssertNil(processor.armedSlot)
+        XCTAssertNil(processor.armedIndex)
     }
 
     func testResetClearsThePicker() {
@@ -266,6 +314,6 @@ final class HotkeyPickerTests: XCTestCase {
         processor.reset()
 
         XCTAssertEqual(processor.picker, .closed)
-        XCTAssertNil(processor.armedSlot)
+        XCTAssertNil(processor.armedIndex)
     }
 }

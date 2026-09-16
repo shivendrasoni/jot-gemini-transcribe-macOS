@@ -95,13 +95,21 @@ public final class EventTapEngine {
         lock.unlock()
     }
 
-    /// How many Transforms the wheel shows. Zero means the Option gesture is
-    /// inert, which is correct when the user has deleted every Transform.
-    public func setWheelSlotCount(_ count: Int) {
+    /// The user's Transforms in display order, each with its chord or nil.
+    ///
+    /// Empty means the Option gesture is inert, which is correct when every
+    /// Transform has been deleted. Only chords that appear here are
+    /// intercepted: ⌥7 with nothing on 7 must keep typing what ⌥7 has always
+    /// typed, because swallowing a key for a gesture that does nothing breaks
+    /// the keyboard.
+    public func setWheelSlots(_ slots: [TransformShortcut?]) {
         lock.lock()
-        processor.wheelSlotCount = count
+        processor.wheelSlots = slots
+        boundSlots = Set(slots.compactMap { $0 })
         lock.unlock()
     }
+
+    private var boundSlots: Set<TransformShortcut> = []
 
     /// The coordinator refused our .begin — the grammar's session is phantom.
     public func resetGrammar() {
@@ -269,7 +277,7 @@ public final class EventTapEngine {
                     apply(fx)
                     return nil
                 }
-                if let slot = TransformShortcut.slot(forKeyCode: keyCode) {
+                if let slot = TransformShortcut.slot(forKeyCode: keyCode), boundSlots.contains(slot) {
                     let fx = processor.handle(.pickerSlot(slot), at: now)
                     lock.unlock()
                     apply(fx)

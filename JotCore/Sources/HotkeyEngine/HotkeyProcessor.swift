@@ -85,11 +85,17 @@ public struct HotkeyProcessor {
 
     public private(set) var phase: Phase = .idle
     public private(set) var picker: PickerState = .closed
-    /// The slot armed for this dictation, if any. Cleared with the session.
-    public private(set) var armedSlot: TransformShortcut?
-    /// How many Transforms the wheel has to show. Pushed in by the controller,
-    /// the same way `doubleTapLockEnabled` is, so this type stays store-free.
-    public var wheelSlotCount = 0
+    /// Index of the Transform armed for this dictation. Cleared with the
+    /// session.
+    public private(set) var armedIndex: Int?
+    /// The user's Transforms in display order, each with the chord bound to it
+    /// or nil. Pushed in by the controller the same way `doubleTapLockEnabled`
+    /// is, so this type stays store-free.
+    ///
+    /// The array, not just a count: it is what turns a keycode into a position,
+    /// which is what makes ⌥2 and "release over the second card" the same act.
+    public var wheelSlots: [TransformShortcut?] = []
+    public var wheelSlotCount: Int { wheelSlots.count }
     /// True while Option is physically down during a session.
     private var optionIsDown = false
 
@@ -104,7 +110,7 @@ public struct HotkeyProcessor {
 
     private mutating func clearPicker() {
         picker = .closed
-        armedSlot = nil
+        armedIndex = nil
         optionIsDown = false
     }
     /// When off, a short tap hints immediately and never arms the double-tap
@@ -261,8 +267,11 @@ public struct HotkeyProcessor {
 
         case .wheelRevealTimeout:
             guard optionIsDown, isSessionActive, wheelSlotCount > 0 else { return fx }
-            picker = .open(highlighted: highlightIndexForArmedSlot())
-            fx.intents = [.showTransformWheel]
+            // Opens on the armed Transform, so reopening shows where you are
+            // rather than snapping back to the first card.
+            let highlighted = armedIndex ?? 0
+            picker = .open(highlighted: highlighted)
+            fx.intents = [.showTransformWheel(highlighted: highlighted)]
             return fx
 
         case .optionUp:
@@ -270,11 +279,16 @@ public struct HotkeyProcessor {
             fx.disarmWheelTimer = true
             guard case .open(let highlighted) = picker else { return fx }
             picker = .closed
-            // Releasing Option over the wheel is the commit gesture.
-            let slot = TransformShortcut.slots.indices.contains(highlighted)
-                ? TransformShortcut.slots[highlighted] : nil
-            armedSlot = slot
-            fx.intents = [.armTransform(slot), .dismissWheel]
+            // Releasing Option over the wheel is the commit gesture. The
+            // highlight is a position in the user's list — the same currency
+            // the digit path resolves to — so a Transform with no chord bound
+            // is still reachable here.
+            guard wheelSlots.indices.contains(highlighted) else {
+                fx.intents = [.dismissWheel]
+                return fx
+            }
+            armedIndex = highlighted
+            fx.intents = [.armTransform(highlighted), .dismissWheel]
             return fx
 
         case .pickerMove(let delta):
@@ -285,14 +299,16 @@ public struct HotkeyProcessor {
             return fx
 
         case .pickerSlot(let slot):
-            guard isSessionActive else { return fx }
+            // An unbound chord is not ours: it must reach the app the user is
+            // typing into, and must never clear a Transform they already chose.
+            guard isSessionActive, let index = wheelSlots.firstIndex(of: slot) else { return fx }
             fx.disarmWheelTimer = true
             let wasOpen = picker != .closed
             picker = .closed
             // Same slot twice disarms. A toggle means there is no separate
             // "clear" chord to learn, and no way to be stuck armed.
-            let next: TransformShortcut? = (armedSlot == slot) ? nil : slot
-            armedSlot = next
+            let next: Int? = (armedIndex == index) ? nil : index
+            armedIndex = next
             fx.intents = wasOpen ? [.armTransform(next), .dismissWheel] : [.armTransform(next)]
             return fx
 
@@ -310,13 +326,4 @@ public struct HotkeyProcessor {
         }
     }
 
-    /// Opens the wheel on the armed Transform when there is one, so a reopen
-    /// shows where you already are rather than snapping back to the first card.
-    private func highlightIndexForArmedSlot() -> Int {
-        guard let armedSlot,
-              let index = TransformShortcut.slots.firstIndex(of: armedSlot),
-              index < wheelSlotCount
-        else { return 0 }
-        return index
-    }
 }

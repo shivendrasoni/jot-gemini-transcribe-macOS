@@ -316,10 +316,17 @@ final class DictationController {
         let settings = SettingsStore()
         engine.setKey(settings.hotkeyKey)
         engine.setDoubleTapLockEnabled(settings.doubleTapLockEnabled)
-        engine.setWheelSlotCount(TransformStore().transforms().count)
+        applyTransformBindings()
     }
 
     // MARK: - Transforms
+
+    /// Pushes the current Transform list into the event tap, in the same order
+    /// the wheel and this controller use — the index in an `.armTransform`
+    /// intent is only meaningful because all three agree on that order.
+    private func applyTransformBindings() {
+        engine.setWheelSlots(TransformStore().transforms().map(\.shortcut))
+    }
 
     /// Resolves a Transform intent and returns whether it consumed the intent.
     ///
@@ -328,28 +335,27 @@ final class DictationController {
     /// no business holding.
     private func handleTransformIntent(_ intent: HotkeyIntent) -> Bool {
         switch intent {
-        case .armTransform(let slot):
-            guard let slot, let transform = TransformStore().transform(forShortcut: slot) else {
-                coordinator.armTransform(nil, name: nil)
-                hud.model.armedTransform = nil
+        case .armTransform(let index):
+            let transforms = TransformStore().transforms()
+            guard let index, transforms.indices.contains(index) else {
+                armTransform(nil)
                 return true
             }
-            coordinator.armTransform(transform.id, name: transform.name)
-            hud.model.armedTransform = transform.name
-            // Arming from the wheel is a deliberate choice with no other
-            // feedback than the chip — a tick confirms it landed without
+            armTransform(transforms[index])
+            // Arming has no feedback but the chip, and the user's eyes are on
+            // what they are writing — a tick confirms it landed without
             // interrupting the sentence.
             earcons.play(.start)
             return true
 
-        case .showTransformWheel:
+        case .showTransformWheel(let highlighted):
             let transforms = TransformStore().transforms()
             guard !transforms.isEmpty else { return true }
             hud.model.wheel = TransformWheelModel(
                 entries: transforms.map {
                     TransformWheelModel.Entry(name: $0.name, shortcut: $0.shortcut?.label)
                 },
-                highlighted: highlightedIndex(in: transforms)
+                highlighted: min(max(highlighted, 0), transforms.count - 1)
             )
             return true
 
@@ -377,25 +383,21 @@ final class DictationController {
 
     var armedTransformID: UUID? { coordinator.armedTransformID }
 
-    /// True while a dictation is in flight — a Transform has nothing to run on
-    /// otherwise.
+    /// True while a Transform can still be armed for the dictation in flight.
+    ///
+    /// `.transcribing` is deliberately excluded even though a session exists:
+    /// by then `completeFinalize` has already handed the context to
+    /// `transcribe()`, so arming would write into a copy nobody reads and the
+    /// menu would offer a choice that silently does nothing.
     var isDictating: Bool {
         switch coordinator.state {
-        case .warming, .recording, .finalizing, .transcribing:
+        case .warming, .recording, .finalizing:
             return true
         default:
             return false
         }
     }
 
-    /// Opens the wheel on the already-armed Transform, so reopening shows where
-    /// you are rather than snapping back to the first card.
-    private func highlightedIndex(in transforms: [Transform]) -> Int {
-        guard let armed = coordinator.armedTransformID,
-              let index = transforms.firstIndex(where: { $0.id == armed })
-        else { return 0 }
-        return index
-    }
 
     private func applySettingChange(key: String?) {
         switch key {
@@ -413,9 +415,10 @@ final class DictationController {
                 onStatusChange?("Ready — hold \(SettingsStore().hotkeyKey.displayName) to dictate")
             }
         case "transforms":
-            // Deleting the last Transform must make the Option gesture inert,
-            // and adding one must make it live, without a relaunch.
-            engine.setWheelSlotCount(TransformStore().transforms().count)
+            // Rebinding a chord in the editor must take effect on the next
+            // dictation, not the next launch — and deleting the last Transform
+            // must hand ⌥1 back to the app the user is typing into.
+            applyTransformBindings()
         case "accessibility":
             // Granted mid-onboarding: wake the engine so the Try-It screen works.
             if !engineActive {

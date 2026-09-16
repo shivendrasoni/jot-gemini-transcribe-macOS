@@ -30,13 +30,19 @@ public enum HotkeyIntent: Equatable, Sendable {
     /// Another key was typed within the interruption window — accidental chord,
     /// cancel silently (Wispr/VoiceInk pattern).
     case abortAccidental
-    /// Arm (or, with nil, disarm) the Transform bound to this slot.
+    /// Arm (or, with nil, disarm) the Transform at this position in the user's
+    /// list.
     ///
-    /// Carries a SLOT — a key identity — and never a Transform. The hotkey layer
-    /// stays pure and store-free; the controller resolves the slot.
-    case armTransform(TransformShortcut?)
-    /// Raise the Transform wheel above the pill.
-    case showTransformWheel
+    /// An INDEX, not a slot, and never a Transform. Both ways of choosing —
+    /// tapping ⌥2 and releasing ⌥ over a card — resolve to the same index
+    /// inside the processor, so there is one thing to compare when deciding
+    /// whether a second press is a re-arm or a toggle-off. A slot would also be
+    /// unable to name a Transform with no chord bound, which the wheel can
+    /// legitimately highlight. The hotkey layer stays store-free; the controller
+    /// turns the index into a Transform.
+    case armTransform(Int?)
+    /// Raise the Transform wheel above the pill, highlighting this index.
+    case showTransformWheel(highlighted: Int)
     /// Move the wheel highlight to this index.
     case moveWheel(Int)
     /// Take the wheel down without arming anything.
