@@ -66,7 +66,7 @@ final class MainWindowController: NSWindowController {
 }
 
 enum MainSection: String, CaseIterable, Identifiable {
-    case history, dictionary
+    case history, dictionary, transforms
     case general, dictation, privacy, advanced
     case about
     var id: String { rawValue }
@@ -75,6 +75,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         switch self {
         case .history: return "History"
         case .dictionary: return "Dictionary"
+        case .transforms: return "Transforms"
         case .general: return "General"
         case .dictation: return "Dictation"
         case .privacy: return "Privacy & Storage"
@@ -87,6 +88,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         switch self {
         case .history: return "clock.arrow.circlepath"
         case .dictionary: return "character.book.closed.fill"
+        case .transforms: return "wand.and.stars"
         case .general: return "gearshape.fill"
         case .dictation: return "waveform"
         case .privacy: return "hand.raised.fill"
@@ -99,6 +101,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         switch self {
         case .history: return JotUI.Colors.gBlue
         case .dictionary: return Color(nsColor: .systemOrange)
+        case .transforms: return Color(nsColor: .systemPurple)
         case .general: return Color(nsColor: .systemGray)
         case .dictation: return Color(nsColor: .systemTeal)
         case .privacy: return Color(nsColor: .systemGreen)
@@ -107,7 +110,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         }
     }
 
-    static let dataSections: [MainSection] = [.history, .dictionary]
+    static let dataSections: [MainSection] = [.history, .dictionary, .transforms]
     static let settingsSections: [MainSection] = [.general, .dictation, .privacy, .advanced, .about]
 }
 
@@ -173,6 +176,8 @@ private struct MainView: View {
                 }
             case .dictionary:
                 DictionaryView()
+            case .transforms:
+                TransformsView()
             case .general:
                 GeneralPane().formStyle(.grouped)
             case .dictation:
