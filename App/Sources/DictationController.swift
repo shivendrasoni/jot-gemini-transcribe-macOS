@@ -342,10 +342,10 @@ final class DictationController {
                 return true
             }
             armTransform(transforms[index])
-            // Arming has no feedback but the chip, and the user's eyes are on
-            // what they are writing — a tick confirms it landed without
-            // interrupting the sentence.
-            earcons.play(.start)
+            // Deliberately silent. The chip on the pill is the confirmation:
+            // it persists for the rest of the sentence rather than passing in
+            // 200ms, and it does not play into an open microphone. `.start`
+            // would also be a lie — nothing started.
             return true
 
         case .showTransformWheel(let highlighted):
