@@ -45,4 +45,25 @@ final class PillModel: ObservableObject {
     @Published var corrected: String = ""
     /// The kept/cut runs to animate. Empty means show plain text.
     @Published var correction: [TranscriptDiff.Segment] = []
+    /// The Transform armed for this dictation, shown as a chip on the pill.
+    /// Visible for the rest of the recording so the user can see which prompt
+    /// is armed while they are still talking.
+    @Published var armedTransform: String?
+    /// The Transform wheel, when it is up. Nil is the overwhelmingly common
+    /// case and costs nothing to render.
+    @Published var wheel: TransformWheelModel?
+}
+
+/// What the wheel is showing. A flat list plus a highlight — the arc is a
+/// rendering choice, not a data structure.
+struct TransformWheelModel: Equatable {
+    struct Entry: Equatable, Identifiable {
+        let name: String
+        /// "1", "t", or nil when the Transform has no chord bound.
+        let shortcut: String?
+        var id: String { "\(shortcut ?? "-")\(name)" }
+    }
+
+    var entries: [Entry]
+    var highlighted: Int
 }

@@ -33,6 +33,12 @@ final class StatusItemController: NSObject {
     private let onOpenSettings: () -> Void
     private let onStartHandsFree: () -> Void
     private let onOpenAbout: () -> Void
+    /// Arms a Transform for the dictation in flight. nil disarms.
+    private let onArmTransform: (Transform?) -> Void
+    /// Whether a dictation is in flight, and which Transform it has armed —
+    /// read when the submenu opens, because both change constantly.
+    private let armedTransformID: () -> UUID?
+    private let isDictating: () -> Bool
     private var animationTimer: Timer?
     private var frameIndex = 0
     private var state: VisualState = .idle
@@ -42,7 +48,10 @@ final class StatusItemController: NSObject {
         onPasteLast: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void,
         onStartHandsFree: @escaping () -> Void,
-        onOpenAbout: @escaping () -> Void
+        onOpenAbout: @escaping () -> Void,
+        onArmTransform: @escaping (Transform?) -> Void = { _ in },
+        armedTransformID: @escaping () -> UUID? = { nil },
+        isDictating: @escaping () -> Bool = { false }
     ) {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.onOpenHistory = onOpenHistory
@@ -50,6 +59,9 @@ final class StatusItemController: NSObject {
         self.onOpenSettings = onOpenSettings
         self.onStartHandsFree = onStartHandsFree
         self.onOpenAbout = onOpenAbout
+        self.onArmTransform = onArmTransform
+        self.armedTransformID = armedTransformID
+        self.isDictating = isDictating
         super.init()
 
         statusItem.button?.image = Self.glyph(barHeights: Self.idleBars, dimmed: false)
@@ -162,6 +174,15 @@ final class StatusItemController: NSObject {
 
         menu.addItem(.separator())
 
+        // Arming without touching the keyboard. This is the path that makes
+        // Transforms usable before anyone learns ⌥1, and the one that still
+        // works if the Option chord collides with something in their setup.
+        let transformsItem = NSMenuItem(title: "Transforms", action: nil, keyEquivalent: "")
+        let transformsMenu = NSMenu(title: "Transforms")
+        transformsMenu.delegate = self
+        transformsItem.submenu = transformsMenu
+        menu.addItem(transformsItem)
+
         // Which mic Jot hears through — moves the SYSTEM default input, exactly
         // like Control Center, so AirPods vs built-in is one click (dogfood).
         let micItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
@@ -210,12 +231,20 @@ final class StatusItemController: NSObject {
         guard let id = sender.representedObject as? AudioDeviceID else { return }
         AudioInputDevices.setDefault(id: id)
     }
+
+    @objc private func armTransform(_ sender: NSMenuItem) {
+        onArmTransform(sender.representedObject as? Transform)
+    }
 }
 
 extension StatusItemController: NSMenuDelegate {
     /// Rebuild the Microphone submenu each open — devices come and go
     /// (AirPods connect, headsets unplug) and the checkmark must be live.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu.title == "Transforms" {
+            rebuildTransformsMenu(menu)
+            return
+        }
         guard menu.title == "Microphone" else { return }
         menu.removeAllItems()
         let current = AudioInputDevices.currentDefaultID()
@@ -237,5 +266,48 @@ extension StatusItemController: NSMenuDelegate {
         let note = NSMenuItem(title: "Sets your Mac's input device", action: nil, keyEquivalent: "")
         note.isEnabled = false
         menu.addItem(note)
+    }
+
+    /// Rebuilt on every open: the Transform list is editable, and which one is
+    /// armed changes with every dictation.
+    private func rebuildTransformsMenu(_ menu: NSMenu) {
+        // Without this, AppKit auto-enables anything with a target and the
+        // "start dictating first" state would silently become clickable.
+        menu.autoenablesItems = false
+        menu.removeAllItems()
+        let transforms = TransformStore().transforms()
+        guard !transforms.isEmpty else {
+            let none = NSMenuItem(title: "No Transforms — add one in Settings", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+            return
+        }
+
+        let armed = armedTransformID()
+        // A Transform applies to the dictation in flight. Offering the list with
+        // nothing recording would arm something the user could not then use, so
+        // say why instead of showing a menu that does nothing.
+        let dictating = isDictating()
+        for transform in transforms {
+            let title = transform.shortcut.map { "\(transform.name)  ⌥\($0.label)" } ?? transform.name
+            let item = NSMenuItem(title: title, action: #selector(armTransform(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = transform
+            item.state = transform.id == armed ? .on : .off
+            item.isEnabled = dictating
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        if dictating {
+            let clear = NSMenuItem(title: "None", action: #selector(armTransform(_:)), keyEquivalent: "")
+            clear.target = self
+            clear.state = armed == nil ? .on : .off
+            menu.addItem(clear)
+        } else {
+            let note = NSMenuItem(title: "Start dictating, then pick one", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            menu.addItem(note)
+        }
     }
 }

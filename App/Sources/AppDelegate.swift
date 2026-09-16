@@ -61,7 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onPasteLast: { [weak controller] in controller?.pasteLastTranscript() },
             onOpenSettings: { [weak controller] in controller?.openSettings() },
             onStartHandsFree: { [weak controller] in controller?.startHandsFree() },
-            onOpenAbout: { [weak controller] in controller?.openSettings(section: "about") }
+            onOpenAbout: { [weak controller] in controller?.openSettings(section: "about") },
+            onArmTransform: { [weak controller] transform in
+                controller?.armTransform(transform)
+            },
+            armedTransformID: { [weak controller] in controller?.armedTransformID },
+            isDictating: { [weak controller] in controller?.isDictating ?? false }
         )
         controller.onStatusChange = { [weak self] status in
             self?.statusItemController?.setStatusLine(status)

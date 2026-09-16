@@ -28,7 +28,7 @@ final class DictationController {
     private let engine = EventTapEngine(key: .fn)
     private let hud = PillHUDController()
     private let earcons = EarconPlayer()
-    private let transcriptionService: GeminiTranscriptionService
+    private let transcriptionService: TranscriptionServicing
     private let historyStore: HistoryStore?
     private var recoveryScanner: RecoveryScanner?
     private var retryQueue: RetryQueue?
@@ -88,7 +88,15 @@ final class DictationController {
     init() {
         KeychainStore.migrateDevKeyFileIfPresent()
         let client = GeminiClient(apiKey: { KeychainStore.loadAPIKey() })
-        let service = GeminiTranscriptionService(client: client)
+        // The Transform decorator wraps the transcription service rather than
+        // living inside it. With nothing armed it is a byte-identical
+        // passthrough, so the default path — almost every dictation — costs
+        // nothing, and GeminiTranscriptionService never learns a second prompt
+        // system.
+        let service = TransformingTranscriptionService(
+            inner: GeminiTranscriptionService(client: client),
+            model: client
+        )
         transcriptionService = service
         historyStore = try? HistoryStore.standard()
         coordinator = DictationCoordinator(
@@ -132,6 +140,10 @@ final class DictationController {
         Task { @MainActor [weak self] in
             for await intent in intentStream {
                 guard let self else { break }
+                // Transform intents carry a SLOT; turning that into a Transform
+                // needs the store, which the hotkey layer deliberately cannot
+                // see. Resolve here, then hand the coordinator an id and a name.
+                if self.handleTransformIntent(intent) { continue }
                 let accepted = self.coordinator.handle(intent)
                 if !accepted, intent == .begin {
                     // Refused begin (secure field / busy): the grammar armed a
@@ -304,6 +316,85 @@ final class DictationController {
         let settings = SettingsStore()
         engine.setKey(settings.hotkeyKey)
         engine.setDoubleTapLockEnabled(settings.doubleTapLockEnabled)
+        engine.setWheelSlotCount(TransformStore().transforms().count)
+    }
+
+    // MARK: - Transforms
+
+    /// Resolves a Transform intent and returns whether it consumed the intent.
+    ///
+    /// The slot→Transform lookup lives here because `HotkeyProcessor` is pure
+    /// and store-free by design, and the wheel is HUD state the coordinator has
+    /// no business holding.
+    private func handleTransformIntent(_ intent: HotkeyIntent) -> Bool {
+        switch intent {
+        case .armTransform(let slot):
+            guard let slot, let transform = TransformStore().transform(forShortcut: slot) else {
+                coordinator.armTransform(nil, name: nil)
+                hud.model.armedTransform = nil
+                return true
+            }
+            coordinator.armTransform(transform.id, name: transform.name)
+            hud.model.armedTransform = transform.name
+            // Arming from the wheel is a deliberate choice with no other
+            // feedback than the chip — a tick confirms it landed without
+            // interrupting the sentence.
+            earcons.play(.start)
+            return true
+
+        case .showTransformWheel:
+            let transforms = TransformStore().transforms()
+            guard !transforms.isEmpty else { return true }
+            hud.model.wheel = TransformWheelModel(
+                entries: transforms.map {
+                    TransformWheelModel.Entry(name: $0.name, shortcut: $0.shortcut?.label)
+                },
+                highlighted: highlightedIndex(in: transforms)
+            )
+            return true
+
+        case .moveWheel(let index):
+            hud.model.wheel?.highlighted = index
+            return true
+
+        case .dismissWheel:
+            hud.model.wheel = nil
+            return true
+
+        default:
+            return false
+        }
+    }
+
+    /// The menu-bar arming path. Same destination as the ⌥ chord, reached
+    /// without the keyboard — which is what makes Transforms usable before
+    /// anyone learns the shortcuts, and if an Option chord collides with
+    /// something in the user's setup.
+    func armTransform(_ transform: Transform?) {
+        coordinator.armTransform(transform?.id, name: transform?.name)
+        hud.model.armedTransform = transform?.name
+    }
+
+    var armedTransformID: UUID? { coordinator.armedTransformID }
+
+    /// True while a dictation is in flight — a Transform has nothing to run on
+    /// otherwise.
+    var isDictating: Bool {
+        switch coordinator.state {
+        case .warming, .recording, .finalizing, .transcribing:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Opens the wheel on the already-armed Transform, so reopening shows where
+    /// you are rather than snapping back to the first card.
+    private func highlightedIndex(in transforms: [Transform]) -> Int {
+        guard let armed = coordinator.armedTransformID,
+              let index = transforms.firstIndex(where: { $0.id == armed })
+        else { return 0 }
+        return index
     }
 
     private func applySettingChange(key: String?) {
@@ -321,6 +412,10 @@ final class DictationController {
             if engineActive, KeychainStore.loadAPIKey() != nil {
                 onStatusChange?("Ready — hold \(SettingsStore().hotkeyKey.displayName) to dictate")
             }
+        case "transforms":
+            // Deleting the last Transform must make the Option gesture inert,
+            // and adding one must make it live, without a relaunch.
+            engine.setWheelSlotCount(TransformStore().transforms().count)
         case "accessibility":
             // Granted mid-onboarding: wake the engine so the Try-It screen works.
             if !engineActive {
@@ -585,6 +680,18 @@ final class DictationController {
                 }
             }
             .store(in: &cancellables)
+
+        // The chip follows the coordinator rather than being cleared by hand at
+        // each exit: a session can end a dozen ways, and every one of them must
+        // take the chip with it or the next dictation inherits a lie about
+        // which prompt is armed.
+        coordinator.$armedTransformName
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] name in
+                self?.hud.model.armedTransform = name
+                if name == nil { self?.hud.model.wheel = nil }
+            }
+            .store(in: &cancellables)
     }
 
     private func transition(to state: DictationState) {
@@ -684,6 +791,19 @@ final class DictationController {
         switch outcome {
         case .inserted:
             earcons.play(.success)
+            // A Transform the user armed by name and that then did nothing is
+            // worth saying out loud: the text still looks plausible, so they
+            // would ship it believing the prompt shaped it.
+            //
+            // Only on .inserted. The other outcomes carry a message the user
+            // must act on — "press ⌘V" is how they avoid LOSING the text — and
+            // that always outranks news about the polish.
+            if case .skipped(let name, let reason) = coordinator.lastTransformNote {
+                Log.session.info("transform \(name, privacy: .public) skipped (\(reason, privacy: .public))")
+                showNotice("\(name) didn't run — inserted as dictated", for: 4.0, sound: nil)
+                consecutiveSilentSessions = 0
+                return
+            }
             let words = coordinator.lastResult.map { $0.split(separator: " ").count }
             setPill(.success(words: words))
             dismissAfter(0.7)
